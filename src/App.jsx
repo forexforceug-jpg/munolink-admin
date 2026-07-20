@@ -11,6 +11,7 @@ import Transactions from './pages/Transactions';
 import Reviews from './pages/Reviews';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
+import HeroSliders from './pages/HeroSliders';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -53,6 +54,7 @@ export default function App() {
           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           <Route path="/login" element={<Navigate to="/" />} />
           <Route path="*" element={<Navigate to="/" />} />
+          <Route path="hero-sliders" element={<HeroSliders />} />
         </Routes>
       </main>
     </div>

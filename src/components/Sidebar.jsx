@@ -7,6 +7,7 @@ const menuItems = [
   { icon: '👥', label: 'Users', path: '/users' },
   { icon: '🏪', label: 'Businesses', path: '/businesses' },
   { icon: '📦', label: 'Catalog', path: '/catalog' },
+  { icon: '🖼️', label: 'Hero Sliders', path: '/hero-sliders' },
   { icon: '💳', label: 'Transactions', path: '/transactions' },
   { icon: '⭐', label: 'Reviews', path: '/reviews' },
   { icon: '📈', label: 'Reports', path: '/reports' },

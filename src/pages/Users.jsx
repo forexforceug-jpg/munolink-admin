@@ -14,11 +14,15 @@ export default function Users() {
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showNotifyModal, setShowNotifyModal] = useState(false);
-  const [formData, setFormData] = useState({ full_name: '', phone: '', role: 'customer', wallet_balance: 0, kyc_verified: false });
+  const [formData, setFormData] = useState({ 
+    full_name: '', 
+    phone: '', 
+    role: 'customer', 
+    wallet_balance: 0, 
+    kyc_verified: false 
+  });
   const [notifyMessage, setNotifyMessage] = useState('');
   const [saving, setSaving] = useState(false);
-  
-  // Additional data for tabs
   const [userActivity, setUserActivity] = useState([]);
   const [userShops, setUserShops] = useState([]);
   const [loadingActivity, setLoadingActivity] = useState(false);
@@ -27,12 +31,14 @@ export default function Users() {
 
   const fetchUsers = async () => {
     setLoading(true);
-    const { data } = await supabase.from('users').select('*').order('created_at', { ascending: false });
+    const { data } = await supabase
+      .from('users')
+      .select('*')
+      .order('created_at', { ascending: false });
     if (data) setUsers(data);
     setLoading(false);
   };
 
-  // Load user details when selected
   useEffect(() => {
     if (selectedUser) {
       loadUserActivity(selectedUser.id);
@@ -62,8 +68,8 @@ export default function Users() {
 
   const filteredUsers = users.filter(u => {
     const matchesSearch = (u.full_name || '').toLowerCase().includes(search.toLowerCase()) ||
-      (u.phone_number || u.phone || '').includes(search);
-    const matchesRole = roleFilter === 'all' || u.role === roleFilter || (roleFilter === 'blocked' && u.role === 'blocked');
+      (u.phone_number || '').includes(search);
+    const matchesRole = roleFilter === 'all' || u.role === roleFilter;
     return matchesSearch && matchesRole;
   });
 
@@ -103,7 +109,7 @@ export default function Users() {
     setSelectedUser(user);
     setFormData({
       full_name: user.full_name || '',
-      phone: user.phone_number || user.phone || '',
+      phone: user.phone_number || '',
       role: user.role || 'customer',
       wallet_balance: Number(user.wallet_balance || 0),
       kyc_verified: user.kyc_verified || false,
@@ -128,7 +134,9 @@ export default function Users() {
       setUsers(prev => prev.map(u => u.id === selectedUser.id ? { ...u, ...formData } : u));
       setSelectedUser({ ...selectedUser, ...formData });
       setShowEditModal(false);
-    } else { alert('Error: ' + error.message); }
+    } else {
+      alert('Error: ' + error.message);
+    }
     setSaving(false);
   };
 
@@ -136,49 +144,67 @@ export default function Users() {
     if (!selectedUser) return;
     const newRole = selectedUser.role === 'blocked' ? 'customer' : 'blocked';
     setSaving(true);
-    const { error } = await supabase.from('users').update({ role: newRole }).eq('id', selectedUser.id);
+    const { error } = await supabase
+      .from('users')
+      .update({ role: newRole })
+      .eq('id', selectedUser.id);
     if (!error) {
       setUsers(prev => prev.map(u => u.id === selectedUser.id ? { ...u, role: newRole } : u));
       setSelectedUser({ ...selectedUser, role: newRole });
-    } else { alert('Error: ' + error.message); }
+    } else {
+      alert('Error: ' + error.message);
+    }
     setSaving(false);
   };
 
   const handleDelete = async () => {
     if (!selectedUser) return;
     setSaving(true);
-    const { error } = await supabase.from('users').delete().eq('id', selectedUser.id);
+    const { error } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', selectedUser.id);
     if (!error) {
       setUsers(prev => prev.filter(u => u.id !== selectedUser.id));
       setSelectedUser(null);
       setShowDeleteConfirm(false);
-    } else { alert('Error: ' + error.message); }
+    } else {
+      alert('Error: ' + error.message);
+    }
     setSaving(false);
   };
 
   const handleSendNotification = async () => {
     if (!notifyMessage.trim() || !selectedUser) return;
     setSaving(true);
-    const { error } = await supabase.from('messages').insert({
-      sender_id: '00000000-0000-0000-0000-000000000000',
-      receiver_id: selectedUser.id,
-      text: `🔔 Admin: ${notifyMessage.trim()}`,
-      is_read: false,
-    });
+    const { error } = await supabase
+      .from('messages')
+      .insert({
+        sender_id: '00000000-0000-0000-0000-000000000000',
+        receiver_id: selectedUser.id,
+        text: `🔔 Admin: ${notifyMessage.trim()}`,
+        is_read: false,
+      });
 
     if (!error) {
       alert(`Notification sent to ${selectedUser.full_name}`);
       setShowNotifyModal(false);
       setNotifyMessage('');
-    } else { alert('Error: ' + error.message); }
+    } else {
+      alert('Error: ' + error.message);
+    }
     setSaving(false);
   };
 
-  const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
+  const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { 
+    year: 'numeric', 
+    month: 'short', 
+    day: 'numeric' 
+  }) : '—';
 
   return (
     <div style={{ padding: '30px 32px', display: 'flex', gap: 20 }}>
-      {/* Main */}
+      {/* Main Content */}
       <div style={{ flex: selectedUser && !showEditModal && !showNotifyModal ? '1' : '1' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
           <div>
@@ -197,7 +223,7 @@ export default function Users() {
           </div>
         </div>
 
-        {/* Stat Cards - Shows all user categories */}
+        {/* Stat Cards */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 24 }}>
           {statCards.map((s, i) => (
             <div key={i} style={statCardStyle}>
@@ -221,7 +247,9 @@ export default function Users() {
         </div>
 
         {/* Users Table */}
-        {loading ? <div style={{ textAlign: 'center', padding: 40, color: '#888' }}>Loading...</div> : (
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: 40, color: '#888' }}>Loading...</div>
+        ) : (
           <div style={cardStyle}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
@@ -265,7 +293,7 @@ export default function Users() {
                           </span>
                         </div>
                       </td>
-                      <td style={td}>{u.phone_number || u.phone || '—'}</td>
+                      <td style={td}>{u.phone_number || '—'}</td>
                       <td style={td}>{getRoleBadge(u.role)}</td>
                       <td style={td}>
                         <span style={{ 
@@ -340,7 +368,7 @@ export default function Users() {
             <div>
               <div style={dRow}><span style={dLabel}>User ID</span><span style={dVal}>{selectedUser.id?.slice(0, 8)}...</span></div>
               <div style={dRow}><span style={dLabel}>Name</span><span style={dVal}>{selectedUser.full_name || '—'}</span></div>
-              <div style={dRow}><span style={dLabel}>Phone</span><span style={dVal}>{selectedUser.phone_number || selectedUser.phone || '—'}</span></div>
+              <div style={dRow}><span style={dLabel}>Phone</span><span style={dVal}>{selectedUser.phone_number || '—'}</span></div>
               <div style={dRow}><span style={dLabel}>Role</span><span>{getRoleBadge(selectedUser.role)}</span></div>
               <div style={dRow}><span style={dLabel}>KYC</span>
                 <span style={{ 
@@ -366,7 +394,6 @@ export default function Users() {
             </div>
           )}
           
-          {/* Activity Tab */}
           {detailTab === 'Activity' && (
             <div>
               {loadingActivity ? (
@@ -396,7 +423,6 @@ export default function Users() {
             </div>
           )}
           
-          {/* Shops Tab */}
           {detailTab === 'Shops' && (
             <div>
               {userShops.length === 0 ? (

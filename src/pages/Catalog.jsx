@@ -23,7 +23,7 @@ export default function Catalog() {
   // Rich form data
   const [formData, setFormData] = useState({
     name: '', category: '', subcategory: '', brand: '', description: '',
-    duration: '', specifications: {}, images: [], tags: [],
+    duration: '', specifications: {}, images: [], tags: [], is_active: true,
   });
   const [specKey, setSpecKey] = useState('');
   const [specValue, setSpecValue] = useState('');
@@ -31,14 +31,21 @@ export default function Catalog() {
   const [imageInput, setImageInput] = useState('');
   const fileInputRef = useRef(null);
 
+  // Image error handling state
+  const [imageErrors, setImageErrors] = useState({});
+
   useEffect(() => { fetchData(); }, []);
 
   const fetchData = async () => {
     setLoading(true);
-    const { data: p } = await supabase.from('catalog').select('*').order('category');
-    const { data: s } = await supabase.from('service_catalog').select('*').order('category');
-    if (p) setProducts(p.map(item => ({ ...item, type: 'product' })));
-    if (s) setServices(s.map(item => ({ ...item, type: 'service' })));
+    try {
+      const { data: p } = await supabase.from('catalog').select('*').order('category');
+      const { data: s } = await supabase.from('service_catalog').select('*').order('category');
+      if (p) setProducts(p.map(item => ({ ...item, type: 'product' })));
+      if (s) setServices(s.map(item => ({ ...item, type: 'service' })));
+    } catch (error) {
+      console.error('Error fetching catalog:', error);
+    }
     setLoading(false);
   };
 
@@ -66,7 +73,10 @@ export default function Catalog() {
   const tableName = tab === 'products' ? 'catalog' : 'service_catalog';
 
   const resetForm = () => {
-    setFormData({ name: '', category: '', subcategory: '', brand: '', description: '', duration: '', specifications: {}, images: [], tags: [] });
+    setFormData({ 
+      name: '', category: '', subcategory: '', brand: '', description: '', 
+      duration: '', specifications: {}, images: [], tags: [], is_active: true 
+    });
     setSpecKey(''); setSpecValue(''); setTagInput(''); setImageInput('');
     setEditingItem(null);
   };
@@ -85,6 +95,7 @@ export default function Catalog() {
       specifications: item.specifications || {},
       images: item.images || [],
       tags: item.tags || [],
+      is_active: item.is_active !== undefined ? item.is_active : true,
     });
     setShowFormModal(true);
   };
@@ -95,30 +106,42 @@ export default function Catalog() {
     if (!file) return;
 
     setUploading(true);
-    const fileExt = file.name.split('.').pop();
-    const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
-    const filePath = `${fileName}`;
+    
+    try {
+      const fileExt = file.name.split('.').pop();
+      const folder = tab === 'products' ? 'products' : 'services';
+      const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
+      const filePath = `${fileName}`;
 
-    const { data, error } = await supabase.storage
-      .from('catalog-images')
-      .upload(filePath, file, {
-        cacheControl: '3600',
-        upsert: false,
-      });
+      const { data, error } = await supabase.storage
+        .from('catalog-images')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: false,
+        });
 
-    if (error) {
+      if (error) {
+        // If bucket doesn't exist, try creating it
+        if (error.message?.includes('bucket not found')) {
+          alert('Storage bucket "catalog-images" not found. Please create it in Supabase Storage.');
+        } else {
+          alert('Upload failed: ' + error.message);
+        }
+        setUploading(false);
+        return;
+      }
+
+      // Get public URL
+      const { data: urlData } = supabase.storage
+        .from('catalog-images')
+        .getPublicUrl(filePath);
+
+      if (urlData?.publicUrl) {
+        setFormData(prev => ({ ...prev, images: [...prev.images, urlData.publicUrl] }));
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
       alert('Upload failed: ' + error.message);
-      setUploading(false);
-      return;
-    }
-
-    // Get public URL
-    const { data: urlData } = supabase.storage
-      .from('catalog-images')
-      .getPublicUrl(filePath);
-
-    if (urlData?.publicUrl) {
-      setFormData(prev => ({ ...prev, images: [...prev.images, urlData.publicUrl] }));
     }
 
     setUploading(false);
@@ -127,12 +150,22 @@ export default function Catalog() {
 
   const addImageUrl = () => {
     if (!imageInput.trim()) return;
-    setFormData({ ...formData, images: [...formData.images, imageInput.trim()] });
-    setImageInput('');
+    // Validate URL
+    try {
+      new URL(imageInput.trim());
+      setFormData({ ...formData, images: [...formData.images, imageInput.trim()] });
+      setImageInput('');
+    } catch {
+      alert('Please enter a valid URL');
+    }
   };
 
   const removeImage = (index) => {
     setFormData({ ...formData, images: formData.images.filter((_, i) => i !== index) });
+  };
+
+  const handleImageError = (index) => {
+    setImageErrors(prev => ({ ...prev, [index]: true }));
   };
 
   const addSpec = () => {
@@ -166,10 +199,11 @@ export default function Catalog() {
       category: formData.category.trim() || 'General',
       subcategory: formData.subcategory.trim() || null,
       description: formData.description.trim() || null,
-      specifications: formData.specifications,
-      images: formData.images,
-      tags: formData.tags,
-      updated_at: new Date(),
+      specifications: formData.specifications || {},
+      images: formData.images || [],
+      tags: formData.tags || [],
+      is_active: formData.is_active !== undefined ? formData.is_active : true,
+      updated_at: new Date().toISOString(),
     };
 
     if (tab === 'products') {
@@ -178,38 +212,54 @@ export default function Catalog() {
       payload.duration = formData.duration.trim() || null;
     }
 
-    if (editingItem) {
-      const { error } = await supabase.from(tableName).update(payload).eq('id', editingItem.id);
-      if (!error) {
+    try {
+      if (editingItem) {
+        const { error } = await supabase.from(tableName).update(payload).eq('id', editingItem.id);
+        if (error) throw error;
+        
         const updated = { ...editingItem, ...payload, type: tab };
         if (tab === 'products') setProducts(prev => prev.map(p => p.id === updated.id ? updated : p));
         else setServices(prev => prev.map(s => s.id === updated.id ? updated : s));
         setSelectedItem(updated);
+      } else {
+        const { data, error } = await supabase.from(tableName).insert(payload).select().single();
+        if (error) throw error;
+        
+        if (data) {
+          const newItem = { ...data, type: tab };
+          if (tab === 'products') setProducts(prev => [newItem, ...prev]);
+          else setServices(prev => [newItem, ...prev]);
+        }
       }
-    } else {
-      const { data, error } = await supabase.from(tableName).insert({ ...payload, is_active: true }).select().single();
-      if (!error && data) {
-        const newItem = { ...data, type: tab };
-        if (tab === 'products') setProducts(prev => [newItem, ...prev]);
-        else setServices(prev => [newItem, ...prev]);
-      }
+      setShowFormModal(false);
+      resetForm();
+    } catch (error) {
+      alert('Error saving: ' + error.message);
     }
     setSaving(false);
-    setShowFormModal(false);
-    resetForm();
   };
 
   const handleDelete = async () => {
     if (!selectedItem) return;
     setSaving(true);
-    const { error } = await supabase.from(tableName).delete().eq('id', selectedItem.id);
-    if (!error) {
+    try {
+      const { error } = await supabase.from(tableName).delete().eq('id', selectedItem.id);
+      if (error) throw error;
+      
       if (tab === 'products') setProducts(prev => prev.filter(p => p.id !== selectedItem.id));
       else setServices(prev => prev.filter(s => s.id !== selectedItem.id));
       setSelectedItem(null);
       setShowDeleteConfirm(false);
+    } catch (error) {
+      alert('Error deleting: ' + error.message);
     }
     setSaving(false);
+  };
+
+  const getSpecCount = (specs) => {
+    if (!specs) return 0;
+    if (typeof specs === 'object') return Object.keys(specs).length;
+    return 0;
   };
 
   return (
@@ -274,6 +324,10 @@ export default function Catalog() {
               <tbody>
                 {pagedItems.map(item => {
                   const isSel = selectedItem?.id === item.id;
+                  const specsCount = getSpecCount(item.specifications);
+                  const imagesCount = (item.images || []).length;
+                  const itemTags = item.tags || [];
+                  
                   return (
                     <tr key={item.id} onClick={() => setSelectedItem(isSel ? null : item)}
                       style={{ borderBottom: '1px solid #F5F6FA', cursor: 'pointer', background: isSel ? '#F8FAFF' : '#FFFFFF' }}>
@@ -281,7 +335,12 @@ export default function Catalog() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                           <div style={{ width: 40, height: 40, borderRadius: 10, background: '#F5F6FA', overflow: 'hidden' }}>
                             {(item.images || []).length > 0 ? (
-                              <img src={item.images[0]} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              <img 
+                                src={item.images[0]} 
+                                alt={item.name}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                onError={(e) => { e.target.style.display = 'none'; }}
+                              />
                             ) : (
                               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', fontSize: 18 }}>
                                 {item.type === 'service' ? '🔧' : '📦'}
@@ -295,9 +354,14 @@ export default function Catalog() {
                         </div>
                       </td>
                       <td style={td}><span style={badge}>{item.category}{item.subcategory ? ` / ${item.subcategory}` : ''}</span></td>
-                      <td style={td}><span style={{ fontSize: 11, color: '#8E99B3' }}>{Object.keys(item.specifications || {}).length} specs</span></td>
-                      <td style={td}><span style={{ fontSize: 11, color: '#8E99B3' }}>{(item.images || []).length} images</span></td>
-                      <td style={td}><div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{(item.tags || []).slice(0, 3).map(t => <span key={t} style={tagBadge}>{t}</span>)}</div></td>
+                      <td style={td}><span style={{ fontSize: 11, color: '#8E99B3' }}>{specsCount} specs</span></td>
+                      <td style={td}><span style={{ fontSize: 11, color: '#8E99B3' }}>{imagesCount} images</span></td>
+                      <td style={td}>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                          {itemTags.slice(0, 3).map(t => <span key={t} style={tagBadge}>{t}</span>)}
+                          {itemTags.length > 3 && <span style={{ fontSize: 10, color: '#8E99B3' }}>+{itemTags.length - 3}</span>}
+                        </div>
+                      </td>
                       <td style={{ ...td, textAlign: 'right' }} onClick={e => e.stopPropagation()}>
                         <button onClick={() => handleOpenEdit(item)} style={smallBtn}>✏️</button>
                         <button onClick={() => { setSelectedItem(item); setShowDeleteConfirm(true); }} style={{ ...smallBtn, background: '#FFEBEE', color: '#F44336' }}>🗑️</button>
@@ -327,7 +391,12 @@ export default function Catalog() {
           </div>
           {/* Show first image */}
           {(selectedItem.images || []).length > 0 && (
-            <img src={selectedItem.images[0]} alt="" style={{ width: '100%', height: 200, objectFit: 'cover', borderRadius: 12, marginBottom: 16 }} />
+            <img 
+              src={selectedItem.images[0]} 
+              alt={selectedItem.name}
+              style={{ width: '100%', height: 200, objectFit: 'cover', borderRadius: 12, marginBottom: 16 }}
+              onError={(e) => { e.target.style.display = 'none'; }}
+            />
           )}
           <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
             {['Overview', 'Specifications', 'Images'].map(t => (
@@ -339,9 +408,15 @@ export default function Catalog() {
               <div style={dRow}><span style={dLabel}>Type</span><span style={badge}>{selectedItem.type === 'service' ? 'Service' : 'Product'}</span></div>
               <div style={dRow}><span style={dLabel}>Category</span><span style={dVal}>{selectedItem.category}{selectedItem.subcategory ? ` / ${selectedItem.subcategory}` : ''}</span></div>
               {selectedItem.brand && <div style={dRow}><span style={dLabel}>Brand</span><span style={dVal}>{selectedItem.brand}</span></div>}
-              {selectedItem.duration && <div style={dRow}><span style={dLabel}>Duration</span><span style={dVal}>{selectedItem.duration}</span></div>}
+              {selectedItem.type === 'service' && selectedItem.duration && <div style={dRow}><span style={dLabel}>Duration</span><span style={dVal}>{selectedItem.duration}</span></div>}
               <div style={{ padding: '10px 0' }}><span style={dLabel}>Description</span><p style={{ fontSize: 12, color: '#8E99B3', marginTop: 6 }}>{selectedItem.description || 'No description'}</p></div>
               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 12 }}>{(selectedItem.tags || []).map(t => <span key={t} style={tagBadge}>{t}</span>)}</div>
+              <div style={dRow}>
+                <span style={dLabel}>Status</span>
+                <span style={selectedItem.is_active ? verifiedBadge : pendingBadge}>
+                  {selectedItem.is_active ? '✅ Active' : '⏳ Inactive'}
+                </span>
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16, paddingTop: 16, borderTop: '1px solid #EEF3FF' }}>
                 <button onClick={() => handleOpenEdit(selectedItem)} style={primaryBtn}>✏️ Edit</button>
                 <button onClick={() => setShowDeleteConfirm(true)} style={dangerBtn}>🗑️ Delete</button>
@@ -350,7 +425,7 @@ export default function Catalog() {
           )}
           {detailTab === 'Specifications' && (
             <div>
-              {Object.keys(selectedItem.specifications || {}).length === 0 ? (
+              {getSpecCount(selectedItem.specifications) === 0 ? (
                 <p style={{ color: '#8E99B3', fontSize: 13 }}>No specifications</p>
               ) : (
                 Object.entries(selectedItem.specifications || {}).map(([k, v]) => (
@@ -366,7 +441,13 @@ export default function Catalog() {
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
                   {(selectedItem.images || []).map((img, i) => (
-                    <img key={i} src={img} alt="" style={{ width: '100%', aspectRatio: '1', objectFit: 'cover', borderRadius: 8 }} />
+                    <img 
+                      key={i} 
+                      src={img} 
+                      alt={`Image ${i + 1}`}
+                      style={{ width: '100%', aspectRatio: '1', objectFit: 'cover', borderRadius: 8 }}
+                      onError={(e) => { e.target.style.display = 'none'; }}
+                    />
                   ))}
                 </div>
               )}
@@ -412,6 +493,18 @@ export default function Catalog() {
               <textarea value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} style={{ ...finput, minHeight: 70, resize: 'vertical' }} />
             </div>
 
+            {/* Active Toggle */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ ...flabel, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input 
+                  type="checkbox" 
+                  checked={formData.is_active !== false} 
+                  onChange={e => setFormData({ ...formData, is_active: e.target.checked })} 
+                />
+                Active (visible to customers)
+              </label>
+            </div>
+
             {/* Specifications */}
             <div style={{ marginBottom: 16 }}>
               <label style={flabel}>Specifications</label>
@@ -421,7 +514,7 @@ export default function Catalog() {
                 <button onClick={addSpec} style={{ ...primaryBtn, padding: '8px 14px', fontSize: 12 }}>+</button>
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {Object.entries(formData.specifications).map(([k, v]) => (
+                {Object.entries(formData.specifications || {}).map(([k, v]) => (
                   <span key={k} style={specChip}><strong>{k}:</strong> {String(v)}
                     <button onClick={() => removeSpec(k)} style={chipX}>×</button>
                   </span>
@@ -445,10 +538,10 @@ export default function Catalog() {
               </div>
             </div>
 
-            {/* Images — File Upload + URL */}
+            {/* Images */}
             <div style={{ marginBottom: 20 }}>
               <label style={flabel}>Images</label>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploading}
@@ -474,7 +567,12 @@ export default function Catalog() {
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {formData.images.map((img, i) => (
                   <div key={i} style={{ position: 'relative' }}>
-                    <img src={img} alt="" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 8, border: '1px solid #EEF3FF' }} />
+                    <img 
+                      src={img} 
+                      alt={`Upload ${i + 1}`}
+                      style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 8, border: '1px solid #EEF3FF' }}
+                      onError={(e) => { e.target.style.display = 'none'; }}
+                    />
                     <button onClick={() => removeImage(i)} style={{
                       position: 'absolute', top: -6, right: -6, width: 20, height: 20,
                       borderRadius: 10, background: '#F44336', color: '#FFFFFF',
@@ -526,6 +624,8 @@ const tabBtn = { padding: '10px 20px', borderRadius: 10, border: '1px solid #DCE
 const smallBtn = { padding: '6px 10px', borderRadius: 8, border: 'none', fontSize: 12, cursor: 'pointer', background: '#EEF3FF', color: '#4A7DFF', marginRight: 4 };
 const badge = { padding: '4px 10px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: '#EEF3FF', color: '#4A7DFF' };
 const tagBadge = { padding: '3px 8px', borderRadius: 8, fontSize: 10, fontWeight: 600, background: '#E8F5E9', color: '#4CAF50' };
+const verifiedBadge = { padding: '4px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: '#E8F5E9', color: '#2E7D32' };
+const pendingBadge = { padding: '4px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: '#FFF3E0', color: '#E65100' };
 const statCardStyle = { background: '#FFFFFF', borderRadius: 14, padding: 16, border: '1px solid #EEF3FF' };
 const cardStyle = { background: '#FFFFFF', borderRadius: 16, border: '1px solid #EEF3FF', overflow: 'hidden' };
 const sidePanel = { width: 380, flexShrink: 0, background: '#FFFFFF', borderRadius: 16, border: '1px solid #EEF3FF', padding: 20, position: 'sticky', top: 100, alignSelf: 'flex-start', maxHeight: 'calc(100vh - 140px)', overflowY: 'auto' };

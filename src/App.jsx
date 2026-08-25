@@ -11,7 +11,8 @@ import Transactions from './pages/Transactions';
 import Reviews from './pages/Reviews';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
-import HeroSliders from './pages/HeroSliders';
+import OpportunityEngine from './pages/OpportunityEngine';
+import Verification from './pages/Verification';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -54,7 +55,8 @@ export default function App() {
           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           <Route path="/login" element={<Navigate to="/" />} />
           <Route path="*" element={<Navigate to="/" />} />
-          <Route path="hero-sliders" element={<HeroSliders />} />
+          <Route path="/OpportunityEngine" element={<OpportunityEngine />} />
+          <Route path="/verification" element={<Verification />} />
         </Routes>
       </main>
     </div>

@@ -1,17 +1,33 @@
+// src/components/Sidebar.jsx
+
 import { useAuth } from '../context/AuthContext';
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { 
+  FiHome, 
+  FiUsers, 
+  FiShoppingBag, 
+  FiPackage, 
+  FiSettings, 
+  FiCheckCircle, 
+  FiCreditCard, 
+  FiStar, 
+  FiBarChart2, 
+  FiTool,
+  FiLogOut,
+} from 'react-icons/fi';
 
 const menuItems = [
-  { icon: '📊', label: 'Dashboard', path: '/' },
-  { icon: '👥', label: 'Users', path: '/users' },
-  { icon: '🏪', label: 'Businesses', path: '/businesses' },
-  { icon: '📦', label: 'Catalog', path: '/catalog' },
-  { icon: '🖼️', label: 'Hero Sliders', path: '/hero-sliders' },
-  { icon: '💳', label: 'Transactions', path: '/transactions' },
-  { icon: '⭐', label: 'Reviews', path: '/reviews' },
-  { icon: '📈', label: 'Reports', path: '/reports' },
-  { icon: '⚙️', label: 'Settings', path: '/settings' },
+  { icon: FiHome, label: 'Dashboard', path: '/' },
+  { icon: FiUsers, label: 'Users', path: '/users' },
+  { icon: FiShoppingBag, label: 'Businesses', path: '/businesses' },
+  { icon: FiPackage, label: 'Catalog', path: '/catalog' },
+  { icon: FiTool, label: 'Engine', path: '/OpportunityEngine' },
+  { icon: FiCheckCircle, label: 'Verification', path: '/verification' },
+  { icon: FiCreditCard, label: 'Transactions', path: '/transactions' },
+  { icon: FiStar, label: 'Reviews', path: '/reviews' },
+  { icon: FiBarChart2, label: 'Reports', path: '/reports' },
+  { icon: FiSettings, label: 'Settings', path: '/settings' },
 ];
 
 export default function Sidebar({ collapsed, setCollapsed }) {
@@ -36,41 +52,44 @@ export default function Sidebar({ collapsed, setCollapsed }) {
       flexDirection: 'column',
       overflow: 'hidden',
     }}>
+      {/* Header */}
       <div style={{
         padding: collapsed ? '20px 16px' : '24px 20px',
         borderBottom: '1px solid rgba(255,255,255,0.08)',
         cursor: 'pointer',
       }} onClick={() => setCollapsed(!collapsed)}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-  <div style={{
-    width: 50, height: 50, borderRadius: 12,
-    backgroundColor: '#FFFFFF',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    padding: 4,
-    flexShrink: 0,
-  }}>
-    <img 
-      src="./logo.png" 
-      alt="Munolink" 
-      style={{
-        width: '100%',
-        height: '100%',
-        objectFit: 'contain',
-      }}
-    />
-  </div>
+          <div style={{
+            width: 50, height: 50, borderRadius: 12,
+            backgroundColor: '#FFFFFF',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 4,
+            flexShrink: 0,
+          }}>
+            <img 
+              src="./logo.png" 
+              alt="Munolink" 
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+              }}
+            />
+          </div>
           {!collapsed && (
             <div>
               <div style={{ fontSize: 16, fontWeight: 800, color: '#FFFFFF', letterSpacing: 1 }}>MUNOLINK</div>
-              <div style={{ fontSize: 9, color: '#4A7DFF', fontWeight: 500 }}>For Better Connections</div>
+              <div style={{ fontSize: 9, color: '#4A7DFF', fontWeight: 500 }}>Admin Panel</div>
             </div>
           )}
         </div>
       </div>
 
-      <nav style={{ flex: 1, padding: '12px 10px' }}>
+      {/* Navigation */}
+      <nav style={{ flex: 1, padding: '12px 10px', overflowY: 'auto' }}>
         {menuItems.map((item) => {
           const isActive = location.pathname === item.path;
+          const Icon = item.icon;
           return (
             <div
               key={item.path}
@@ -86,29 +105,31 @@ export default function Sidebar({ collapsed, setCollapsed }) {
                 fontWeight: isActive ? 700 : 500,
                 fontSize: 14,
                 justifyContent: collapsed ? 'center' : 'flex-start',
+                transition: 'all 0.2s',
               }}
             >
-              <span style={{ fontSize: 18, flexShrink: 0 }}>{item.icon}</span>
+              <Icon size={20} style={{ flexShrink: 0 }} />
               {!collapsed && <span>{item.label}</span>}
             </div>
           );
         })}
       </nav>
 
-      {!collapsed && (
+      {/* Footer */}
+      {!collapsed ? (
         <div style={{
           padding: '16px 20px',
           borderTop: '1px solid rgba(255,255,255,0.08)',
           display: 'flex', alignItems: 'center', gap: 10,
         }}>
           <img 
-  src="/logo.png" 
-  alt="Munolink" 
-  style={{
-    width: 40, height: 40, borderRadius: 10,
-    objectFit: 'cover', flexShrink: 0,
-  }} 
-/>
+            src="/logo.png" 
+            alt="Munolink" 
+            style={{
+              width: 40, height: 40, borderRadius: 10,
+              objectFit: 'cover', flexShrink: 0,
+            }} 
+          />
           <div style={{ flex: 1 }}>
             <div style={{ color: '#FFFFFF', fontSize: 13, fontWeight: 600 }}>Munolink Admin</div>
             <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 10 }}>Super Admin</div>
@@ -120,7 +141,26 @@ export default function Sidebar({ collapsed, setCollapsed }) {
               cursor: 'pointer', fontSize: 18, padding: 4,
             }}
             title="Logout"
-          >🚪</button>
+          >
+            <FiLogOut size={18} />
+          </button>
+        </div>
+      ) : (
+        <div style={{
+          padding: '16px 20px',
+          borderTop: '1px solid rgba(255,255,255,0.08)',
+          display: 'flex', justifyContent: 'center',
+        }}>
+          <button
+            onClick={handleLogout}
+            style={{
+              background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)',
+              cursor: 'pointer', padding: 4,
+            }}
+            title="Logout"
+          >
+            <FiLogOut size={20} />
+          </button>
         </div>
       )}
     </aside>

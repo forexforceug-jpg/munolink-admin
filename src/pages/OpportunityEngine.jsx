@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import { formatMoney } from '../lib/theme';
 
 export default function OpportunityEngine() {
   const [activeTab, setActiveTab] = useState('featured');
@@ -1397,8 +1398,8 @@ export default function OpportunityEngine() {
               </div>
               <div style={flashDealBody}>
                 <div style={flashDealPrice}>
-                  <span style={flashDealOriginal}>UGX {deal.original_price.toLocaleString()}</span>
-                  <span style={flashDealNew}>UGX {deal.deal_price.toLocaleString()}</span>
+                  <span style={flashDealOriginal}>{formatMoney(deal.original_price)}</span>
+                  <span style={flashDealNew}>{formatMoney(deal.deal_price)}</span>
                 </div>
                 <div style={flashDealDates}>
                   <span>🕐 {new Date(deal.start_time).toLocaleDateString()}</span>
@@ -1452,7 +1453,7 @@ export default function OpportunityEngine() {
               </select>
             </div>
             <div style={formGroup}>
-              <label style={formLabel}>Original Price (UGX)</label>
+              <label style={formLabel}>Original Price</label>
               <input
                 type="number"
                 value={newDeal.original_price}
@@ -1461,7 +1462,7 @@ export default function OpportunityEngine() {
               />
             </div>
             <div style={formGroup}>
-              <label style={formLabel}>Deal Price (UGX)</label>
+              <label style={formLabel}>Deal Price</label>
               <input
                 type="number"
                 value={newDeal.deal_price}

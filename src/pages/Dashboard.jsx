@@ -1,1260 +1,960 @@
-// src/pages/Dashboard.jsx
-
-import React, { useState, useEffect, useRef } from 'react';
-import { supabase } from '../lib/supabase';
-import { MapContainer, TileLayer, Marker, Popup, CircleMarker, Tooltip, ZoomControl, useMap } from 'react-leaflet';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
-import { 
-  FiUsers, 
-  FiShoppingBag, 
-  FiPackage, 
-  FiTool, 
-  FiDollarSign, 
-  FiCheckCircle, 
-  FiBell, 
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  FiActivity,
+  FiArrowUpRight,
+  FiCheckCircle,
+  FiCreditCard,
+  FiHeart,
+  FiMapPin,
+  FiPackage,
+  FiRefreshCw,
+  FiShoppingBag,
+  FiStar,
   FiTrendingUp,
-  FiClock,
-  FiBarChart2,
+  FiUsers,
+  FiZap,
 } from 'react-icons/fi';
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import { MapContainer, TileLayer, CircleMarker, Popup } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import { db } from '../lib/db';
+import { useAppSettings } from '../context/AppSettingsContext';
+import {
+  badgeStyle,
+  card,
+  colors,
+  dayKey,
+  formatMoney,
+  formatNumber,
+  ghostButton,
+  initials,
+  panel,
+  radii,
+  timeAgo,
+} from '../lib/theme';
 
-// Fix for default markers in React-Leaflet
-delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-});
+const ENGAGEMENT_COLORS = [colors.primary, colors.success, colors.purple, colors.warning, colors.pink];
 
-const MapController = ({ center, zoom }) => {
-  const map = useMap();
-  useEffect(() => {
-    map.setView(center, zoom);
-  }, [center, zoom]);
-  return null;
-};
+function asArray(result) {
+  return Array.isArray(result?.data) ? result.data : [];
+}
 
-export default function Dashboard() {
-  // ============================================
-  // ALL STATE DECLARATIONS
-  // ============================================
-  const [stats, setStats] = useState({
-    totalUsers: 0,
-    totalShops: 0,
-    totalOrders: 0,
-    totalBookings: 0,
-    totalRevenue: 0,
-    totalTransactions: 0,
-    pendingVerification: 0,
-    totalProducts: 0,
-    totalServices: 0,
-    totalReviews: 0,
-  });
-  const [recentTransactions, setRecentTransactions] = useState([]);
-  const [recentActivity, setRecentActivity] = useState([]);
-  const [topCategories, setTopCategories] = useState([]);
-  const [weeklyRevenue, setWeeklyRevenue] = useState([]);
-  const [weeklyOrders, setWeeklyOrders] = useState([]);
-  const [weeklyBookings, setWeeklyBookings] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [adminInfo, setAdminInfo] = useState({ name: 'Admin', initials: 'AD' });
-  const [mapCenter, setMapCenter] = useState([1.3733, 32.2903]);
-  const [mapZoom, setMapZoom] = useState(6);
-
-  const [locationMarkers, setLocationMarkers] = useState([]);
-  const [selectedLocation, setSelectedLocation] = useState(null);
-  const [mapData, setMapData] = useState({
-    shops: [],
-    users: [],
-    providers: [],
-    institutions: [],
-  });
-  const [mapFilter, setMapFilter] = useState('all');
-  const [searchLocation, setSearchLocation] = useState('');
-
-  const [topUsers, setTopUsers] = useState([]);
-  const [topProducts, setTopProducts] = useState([]);
-  const [topServices, setTopServices] = useState([]);
-  const [topShops, setTopShops] = useState([]);
-  const [topProviders, setTopProviders] = useState([]);
-  const [activeTab, setActiveTab] = useState('users');
-
-  // ============================================
-  // HELPER FUNCTIONS - Defined first
-  // ============================================
-  const timeAgo = (timestamp) => {
-    if (!timestamp) return 'Recently';
-    const now = new Date();
-    const past = new Date(timestamp);
-    const diffMs = now.getTime() - past.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins} min ago`;
-    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
-    return past.toLocaleDateString();
+function StatCard({ icon: Icon, label, value, detail, tone = 'primary', trend }) {
+  const tones = {
+    primary: { color: colors.primary, background: colors.primarySoft },
+    success: { color: colors.success, background: colors.successSoft },
+    purple: { color: colors.purple, background: colors.purpleSoft },
+    warning: { color: colors.warning, background: colors.warningSoft },
+    pink: { color: colors.pink, background: colors.pinkSoft },
+    teal: { color: colors.teal, background: colors.tealSoft },
   };
-
-  const getFilteredMarkers = () => {
-    if (mapFilter === 'all') return locationMarkers;
-    return locationMarkers.filter(m => m.type === mapFilter);
-  };
-
-  const getCounts = () => {
-    const counts = { all: locationMarkers.length };
-    const types = ['shop', 'user', 'provider', 'institution'];
-    types.forEach(type => {
-      counts[type] = locationMarkers.filter(m => m.type === type).length;
-    });
-    return counts;
-  };
-
-  const counts = getCounts();
-
-  const zoomToLocation = (area) => {
-    const marker = locationMarkers.find(m => m.area?.toLowerCase().includes(area.toLowerCase()));
-    if (marker) {
-      setMapCenter([marker.lat, marker.lng]);
-      setMapZoom(12);
-    }
-  };
-
-  // ============================================
-  // FETCH FUNCTIONS - Defined before useEffect
-  // ============================================
-  const fetchAdminInfo = async () => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data: profile } = await supabase
-          .from('users')
-          .select('full_name')
-          .eq('id', user.id)
-          .single();
-        
-        if (profile?.full_name) {
-          const name = profile.full_name;
-          const initials = name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
-          setAdminInfo({ name, initials });
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching admin info:', error);
-    }
-  };
-
-  const fetchLocationData = async () => {
-    try {
-      const { data: shops } = await supabase
-        .from('shops')
-        .select('id, name, area, district, city, latitude, longitude, rating, is_verified, category');
-
-      const { data: users } = await supabase
-        .from('users')
-        .select('id, full_name, phone_number, created_at');
-
-      const { data: providers } = await supabase
-        .from('individual_providers')
-        .select('id, full_name, city, address, rating, specialty');
-
-      const { data: institutions } = await supabase
-        .from('institutions')
-        .select('id, name, city, area, rating, type');
-
-      const markers = [];
-
-      shops?.forEach(shop => {
-        if (shop.latitude && shop.longitude) {
-          markers.push({
-            id: shop.id,
-            type: 'shop',
-            name: shop.name,
-            lat: shop.latitude,
-            lng: shop.longitude,
-            area: shop.area || shop.city || shop.district || 'Unknown',
-            rating: shop.rating,
-            verified: shop.is_verified,
-            category: shop.category,
-            icon: '🏪',
-            color: '#4CAF50',
-          });
-        }
-      });
-
-      const userLocations = [
-        { lat: 0.3136, lng: 32.5811, area: 'Kampala' },
-        { lat: 0.4244, lng: 33.2026, area: 'Jinja' },
-        { lat: 0.0512, lng: 32.4637, area: 'Entebbe' },
-        { lat: 0.3533, lng: 32.7553, area: 'Mukono' },
-        { lat: 2.7737, lng: 32.2917, area: 'Gulu' },
-        { lat: -0.6072, lng: 30.6545, area: 'Mbarara' },
-        { lat: -0.3419, lng: 31.7246, area: 'Masaka' },
-      ];
-
-      users?.forEach((user, index) => {
-        const loc = userLocations[index % userLocations.length];
-        markers.push({
-          id: user.id,
-          type: 'user',
-          name: user.full_name || 'User',
-          lat: loc.lat + (Math.random() - 0.5) * 0.05,
-          lng: loc.lng + (Math.random() - 0.5) * 0.05,
-          area: loc.area,
-          phone: user.phone_number,
-          icon: '👤',
-          color: '#4A7DFF',
-        });
-      });
-
-      providers?.forEach(provider => {
-        if (provider.city) {
-          const cityCoords = {
-            'Kampala': { lat: 0.3136, lng: 32.5811 },
-            'Jinja': { lat: 0.4244, lng: 33.2026 },
-            'Entebbe': { lat: 0.0512, lng: 32.4637 },
-            'Mukono': { lat: 0.3533, lng: 32.7553 },
-            'Gulu': { lat: 2.7737, lng: 32.2917 },
-            'Mbarara': { lat: -0.6072, lng: 30.6545 },
-            'Masaka': { lat: -0.3419, lng: 31.7246 },
-          };
-          const coords = cityCoords[provider.city] || { lat: 0.3136 + Math.random() * 0.1, lng: 32.5811 + Math.random() * 0.1 };
-          markers.push({
-            id: provider.id,
-            type: 'provider',
-            name: provider.full_name,
-            lat: coords.lat,
-            lng: coords.lng,
-            area: provider.city,
-            rating: provider.rating,
-            specialty: provider.specialty,
-            icon: '🔧',
-            color: '#F1C40F',
-          });
-        }
-      });
-
-      institutions?.forEach(institution => {
-        if (institution.city) {
-          const cityCoords = {
-            'Kampala': { lat: 0.3136, lng: 32.5811 },
-            'Jinja': { lat: 0.4244, lng: 33.2026 },
-            'Entebbe': { lat: 0.0512, lng: 32.4637 },
-            'Mukono': { lat: 0.3533, lng: 32.7553 },
-            'Gulu': { lat: 2.7737, lng: 32.2917 },
-            'Mbarara': { lat: -0.6072, lng: 30.6545 },
-          };
-          const coords = cityCoords[institution.city] || { lat: 0.3136 + Math.random() * 0.1, lng: 32.5811 + Math.random() * 0.1 };
-          markers.push({
-            id: institution.id,
-            type: 'institution',
-            name: institution.name,
-            lat: coords.lat,
-            lng: coords.lng,
-            area: institution.city,
-            rating: institution.rating,
-            type: institution.type,
-            icon: '🏨',
-            color: '#E74C3C',
-          });
-        }
-      });
-
-      setLocationMarkers(markers);
-
-    } catch (error) {
-      console.error('Error fetching location data:', error);
-    }
-  };
-
-  const fetchTopAnalytics = async () => {
-    try {
-      const { data: topUsersData } = await supabase
-        .from('transactions')
-        .select('user_id, users(full_name, phone_number)')
-        .limit(10);
-
-      const { data: topProductsData } = await supabase
-        .from('shop_products')
-        .select('catalog_id, catalog(name, category), shop_id, shops(name), regular_price')
-        .limit(10);
-
-      const { data: topServicesData } = await supabase
-        .from('provider_services')
-        .select('service_id, service_catalog(name, category), user_id, price')
-        .limit(10);
-
-      const { data: topShopsData } = await supabase
-        .from('transactions')
-        .select('shop_id, shops(name), amount')
-        .limit(10);
-
-      const { data: topProvidersData } = await supabase
-        .from('individual_providers')
-        .select('full_name, specialty, rating, review_count')
-        .order('rating', { ascending: false })
-        .limit(10);
-
-      setTopUsers(topUsersData || []);
-      setTopProducts(topProductsData || []);
-      setTopServices(topServicesData || []);
-      setTopShops(topShopsData || []);
-      setTopProviders(topProvidersData || []);
-
-    } catch (error) {
-      console.error('Error fetching top analytics:', error);
-    }
-  };
-
-  const fetchRecentActivity = async () => {
-    try {
-      const activities = [];
-      const { data: recentUsers } = await supabase
-        .from('users')
-        .select('full_name, created_at')
-        .order('created_at', { ascending: false })
-        .limit(3);
-
-      recentUsers?.forEach(user => {
-        if (user.full_name) {
-          activities.push({
-            icon: '👤',
-            text: `${user.full_name} registered as a new user`,
-            time: timeAgo(user.created_at),
-            color: '#4A7DFF'
-          });
-        }
-      });
-
-      const { data: recentShops } = await supabase
-        .from('shops')
-        .select('name, created_at')
-        .order('created_at', { ascending: false })
-        .limit(3);
-
-      recentShops?.forEach(shop => {
-        if (shop.name) {
-          activities.push({
-            icon: '🏪',
-            text: `"${shop.name}" joined the platform`,
-            time: timeAgo(shop.created_at),
-            color: '#4CAF50'
-          });
-        }
-      });
-
-      const { data: recentTxns } = await supabase
-        .from('transactions')
-        .select('amount, type, created_at, reference')
-        .order('created_at', { ascending: false })
-        .limit(3);
-
-      recentTxns?.forEach(txn => {
-        const type = txn.type || 'order';
-        activities.push({
-          icon: type === 'service_booking' ? '📅' : '📦',
-          text: `${type === 'service_booking' ? 'Booking' : 'Order'} ${txn.reference || '#' + txn.id?.slice(0, 6)} completed • UGX ${Number(txn.amount).toLocaleString()}`,
-          time: timeAgo(txn.created_at),
-          color: type === 'service_booking' ? '#9C27B0' : '#FF9800'
-        });
-      });
-
-      const { data: recentVerifs } = await supabase
-        .from('verification_requests')
-        .select('created_at')
-        .order('created_at', { ascending: false })
-        .limit(2);
-
-      recentVerifs?.forEach(() => {
-        activities.push({
-          icon: '📋',
-          text: 'New verification request submitted',
-          time: 'Just now',
-          color: '#F44336'
-        });
-      });
-
-      return activities.sort((a, b) => {
-        const aTime = a.time === 'Just now' ? 0 : parseInt(a.time) || 999;
-        const bTime = b.time === 'Just now' ? 0 : parseInt(b.time) || 999;
-        return aTime - bTime;
-      }).slice(0, 5);
-
-    } catch (error) {
-      console.error('Error fetching activity:', error);
-      return [];
-    }
-  };
-
-  const fetchTopCategories = async () => {
-    try {
-      const { data: catalogItems } = await supabase
-        .from('catalog')
-        .select('category');
-
-      const categoryCounts = {};
-      catalogItems?.forEach(item => {
-        if (item.category) {
-          categoryCounts[item.category] = (categoryCounts[item.category] || 0) + 1;
-        }
-      });
-
-      const total = Object.values(categoryCounts).reduce((sum, count) => sum + count, 0) || 1;
-      const sorted = Object.entries(categoryCounts)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
-        .map(([name, count]) => ({
-          name: name.charAt(0).toUpperCase() + name.slice(1),
-          pct: Math.round((count / total) * 100),
-          color: ['#4A7DFF', '#4CAF50', '#FF9800', '#9C27B0', '#F44336'][Math.floor(Math.random() * 5)]
-        }));
-
-      if (Object.keys(categoryCounts).length > 5) {
-        const otherCount = Object.entries(categoryCounts)
-          .slice(5)
-          .reduce((sum, [, count]) => sum + count, 0);
-        sorted.push({
-          name: 'Others',
-          pct: Math.round((otherCount / total) * 100),
-          color: '#00BCD4'
-        });
-      }
-
-      return sorted;
-
-    } catch (error) {
-      console.error('Error fetching categories:', error);
-      return [
-        { name: 'Pharmacy', pct: 35, color: '#4A7DFF' },
-        { name: 'Grocery', pct: 25, color: '#4CAF50' },
-        { name: 'Hardware', pct: 18, color: '#FF9800' },
-        { name: 'Electronics', pct: 12, color: '#9C27B0' },
-        { name: 'Others', pct: 10, color: '#00BCD4' },
-      ];
-    }
-  };
-
-  const fetchWeeklyData = async () => {
-    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const revenue = [0, 0, 0, 0, 0, 0, 0];
-    const orders = [0, 0, 0, 0, 0, 0, 0];
-    const bookings = [0, 0, 0, 0, 0, 0, 0];
-
-    try {
-      const weekAgo = new Date();
-      weekAgo.setDate(weekAgo.getDate() - 7);
-
-      const { data: weekTxns } = await supabase
-        .from('transactions')
-        .select('amount, type, created_at')
-        .gte('created_at', weekAgo.toISOString());
-
-      weekTxns?.forEach(txn => {
-        const date = new Date(txn.created_at);
-        const dayIndex = date.getDay();
-        const mappedIndex = dayIndex === 0 ? 6 : dayIndex - 1;
-        
-        if (mappedIndex >= 0 && mappedIndex < 7) {
-          revenue[mappedIndex] += Number(txn.amount || 0);
-          
-          if (txn.type === 'service_booking' || txn.type === 'booking') {
-            bookings[mappedIndex]++;
-          } else {
-            orders[mappedIndex]++;
-          }
-        }
-      });
-
-      const maxRevenue = Math.max(...revenue, 1);
-      const scaledRevenue = revenue.map(r => Math.round((r / maxRevenue) * 100));
-
-      return {
-        revenue: scaledRevenue,
-        orders: orders,
-        bookings: bookings,
-      };
-
-    } catch (error) {
-      console.error('Error fetching weekly data:', error);
-      return {
-        revenue: [60, 85, 45, 95, 70, 120, 100],
-        orders: [35, 50, 30, 60, 45, 75, 65],
-        bookings: [15, 25, 12, 30, 20, 35, 28],
-      };
-    }
-  };
-
-  const fetchDashboardData = async () => {
-    try {
-      const [
-        { count: users },
-        { count: shops },
-        { count: pendingVerif },
-        { count: products },
-        { count: services },
-        { count: reviews },
-        { data: txnData },
-      ] = await Promise.all([
-        supabase.from('users').select('*', { count: 'exact', head: true }),
-        supabase.from('shops').select('*', { count: 'exact', head: true }),
-        supabase.from('verification_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-        supabase.from('catalog').select('*', { count: 'exact', head: true }),
-        supabase.from('service_catalog').select('*', { count: 'exact', head: true }),
-        supabase.from('reviews').select('*', { count: 'exact', head: true }),
-        supabase.from('transactions').select('*').order('created_at', { ascending: false }).limit(100),
-      ]);
-
-      const transactions = txnData || [];
-      const orders = transactions.filter(t => t.type === 'order' || t.type === 'purchase' || !t.type);
-      const bookings = transactions.filter(t => t.type === 'service_booking' || t.type === 'booking');
-      const revenue = transactions.reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-      setStats({
-        totalUsers: users || 0,
-        totalShops: shops || 0,
-        totalOrders: orders.length,
-        totalBookings: bookings.length,
-        totalRevenue: revenue,
-        totalTransactions: transactions.length,
-        pendingVerification: pendingVerif || 0,
-        totalProducts: products || 0,
-        totalServices: services || 0,
-        totalReviews: reviews || 0,
-      });
-
-      setRecentTransactions(transactions.slice(0, 8));
-      const activity = await fetchRecentActivity();
-      setRecentActivity(activity);
-      const categories = await fetchTopCategories();
-      setTopCategories(categories);
-
-      const weekly = await fetchWeeklyData();
-      setWeeklyRevenue(weekly.revenue);
-      setWeeklyOrders(weekly.orders);
-      setWeeklyBookings(weekly.bookings);
-
-    } catch (error) {
-      console.error('Dashboard error:', error);
-    } finally {
-      // ✅ IMPORTANT: Always set loading to false
-      setLoading(false);
-    }
-  };
-
-  // ============================================
-  // useEffect - Now all functions are defined
-  // ============================================
-  useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      try {
-        await Promise.all([
-          fetchDashboardData(),
-          fetchAdminInfo(),
-          fetchLocationData(),
-          fetchTopAnalytics(),
-        ]);
-      } catch (error) {
-        console.error('Error loading dashboard:', error);
-        setLoading(false);
-      }
-    };
-    
-    loadData();
-  }, []);
-
-  // ============================================
-  // RENDER FUNCTIONS
-  // ============================================
-  const renderInteractiveMap = () => {
-    const filteredMarkers = getFilteredMarkers();
-    
-    return (
-      <div style={mapContainer}>
-        <div style={mapHeader}>
-          <div>
-            <h3 style={mapTitle}>📍 East Africa Distribution Map</h3>
-            <p style={mapSubtitle}>Click on markers to see details • Zoom in/out to explore</p>
-          </div>
-          <div style={mapControls}>
-            <input
-              type="text"
-              placeholder="Search location..."
-              value={searchLocation}
-              onChange={(e) => {
-                setSearchLocation(e.target.value);
-                if (e.target.value.length > 2) {
-                  zoomToLocation(e.target.value);
-                }
-              }}
-              style={searchInputMap}
-            />
-            <select
-              value={mapFilter}
-              onChange={(e) => setMapFilter(e.target.value)}
-              style={filterSelectMap}
-            >
-              <option value="all">All ({counts.all})</option>
-              <option value="shop">🏪 Shops ({counts.shop})</option>
-              <option value="user">👤 Users ({counts.user})</option>
-              <option value="provider">🔧 Providers ({counts.provider})</option>
-              <option value="institution">🏨 Institutions ({counts.institution})</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={mapLegend}>
-          <div style={legendItem}><span style={{ ...legendDot, background: '#4CAF50' }}></span> Shops</div>
-          <div style={legendItem}><span style={{ ...legendDot, background: '#4A7DFF' }}></span> Users</div>
-          <div style={legendItem}><span style={{ ...legendDot, background: '#F1C40F' }}></span> Providers</div>
-          <div style={legendItem}><span style={{ ...legendDot, background: '#E74C3C' }}></span> Institutions</div>
-        </div>
-
-        <div style={mapWrapper}>
-          <MapContainer
-            center={mapCenter}
-            zoom={mapZoom}
-            style={mapStyle}
-            zoomControl={false}
-            scrollWheelZoom={true}
-          >
-            <TileLayer
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            />
-            <ZoomControl position="bottomright" />
-
-            {filteredMarkers.map((marker, index) => {
-              const markerColor = marker.color || '#4A7DFF';
-              const popupContent = (
-                <div style={popupStyle}>
-                  <div style={popupHeader}>
-                    <span style={popupIcon}>{marker.icon}</span>
-                    <span style={popupName}>{marker.name}</span>
-                  </div>
-                  <div style={popupBody}>
-                    <div><strong>Type:</strong> {marker.type}</div>
-                    <div><strong>Area:</strong> {marker.area || 'Unknown'}</div>
-                    {marker.rating && <div><strong>Rating:</strong> ⭐ {marker.rating?.toFixed(1)}</div>}
-                    {marker.verified && <div><strong>Status:</strong> ✅ Verified</div>}
-                    {marker.category && <div><strong>Category:</strong> {marker.category}</div>}
-                    {marker.specialty && <div><strong>Specialty:</strong> {marker.specialty}</div>}
-                    {marker.phone && <div><strong>Phone:</strong> {marker.phone}</div>}
-                  </div>
-                </div>
-              );
-
-              const radius = marker.type === 'shop' ? 10 : 
-                           marker.type === 'user' ? 6 :
-                           marker.type === 'provider' ? 8 : 12;
-
-              return (
-                <CircleMarker
-                  key={marker.id || index}
-                  center={[marker.lat, marker.lng]}
-                  radius={radius}
-                  fillColor={markerColor}
-                  color={markerColor}
-                  weight={2}
-                  opacity={0.8}
-                  fillOpacity={0.6}
-                >
-                  <Popup>{popupContent}</Popup>
-                  <Tooltip permanent={false} direction="top" offset={[0, -10]}>
-                    <span style={tooltipStyle}>{marker.name}</span>
-                  </Tooltip>
-                </CircleMarker>
-              );
-            })}
-
-            <MapController center={mapCenter} zoom={mapZoom} />
-          </MapContainer>
-        </div>
-      </div>
-    );
-  };
-
-  const renderTopAnalytics = () => {
-    const tabs = [
-      { key: 'users', label: '👤 Top Users' },
-      { key: 'products', label: '📦 Top Products' },
-      { key: 'services', label: '🔧 Top Services' },
-      { key: 'shops', label: '🏪 Top Shops' },
-      { key: 'providers', label: '⭐ Top Providers' },
-    ];
-
-    return (
-      <div style={analyticsContainer}>
-        <div style={analyticsHeader}>
-          <h3 style={analyticsTitle}>🏆 Top Performers</h3>
-          <div style={analyticsTabs}>
-            {tabs.map(tab => (
-              <button
-                key={tab.key}
-                onClick={() => setActiveTab(tab.key)}
-                style={{
-                  ...analyticsTab,
-                  background: activeTab === tab.key ? '#4A7DFF' : '#F5F6FA',
-                  color: activeTab === tab.key ? '#FFFFFF' : '#8E99B3',
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div style={analyticsTableWrap}>
-          {activeTab === 'users' && (
-            <table style={analyticsTable}>
-              <thead>
-                <tr>
-                  <th style={analyticsTh}>#</th>
-                  <th style={analyticsTh}>User</th>
-                  <th style={analyticsTh}>Phone</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topUsers.slice(0, 10).map((user, i) => (
-                  <tr key={i} style={analyticsTr}>
-                    <td style={analyticsTd}>{i + 1}</td>
-                    <td style={analyticsTd}>{user.users?.full_name || 'Unknown'}</td>
-                    <td style={analyticsTd}>{user.users?.phone_number || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {activeTab === 'products' && (
-            <table style={analyticsTable}>
-              <thead>
-                <tr>
-                  <th style={analyticsTh}>#</th>
-                  <th style={analyticsTh}>Product</th>
-                  <th style={analyticsTh}>Category</th>
-                  <th style={analyticsTh}>Shop</th>
-                  <th style={analyticsTh}>Price</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topProducts.slice(0, 10).map((product, i) => (
-                  <tr key={i} style={analyticsTr}>
-                    <td style={analyticsTd}>{i + 1}</td>
-                    <td style={analyticsTd}>{product.catalog?.name || 'Unknown'}</td>
-                    <td style={analyticsTd}>{product.catalog?.category || '—'}</td>
-                    <td style={analyticsTd}>{product.shops?.name || '—'}</td>
-                    <td style={analyticsTd}>UGX {Number(product.regular_price || 0).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {activeTab === 'services' && (
-            <table style={analyticsTable}>
-              <thead>
-                <tr>
-                  <th style={analyticsTh}>#</th>
-                  <th style={analyticsTh}>Service</th>
-                  <th style={analyticsTh}>Category</th>
-                  <th style={analyticsTh}>Price</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topServices.slice(0, 10).map((service, i) => (
-                  <tr key={i} style={analyticsTr}>
-                    <td style={analyticsTd}>{i + 1}</td>
-                    <td style={analyticsTd}>{service.service_catalog?.name || 'Unknown'}</td>
-                    <td style={analyticsTd}>{service.service_catalog?.category || '—'}</td>
-                    <td style={analyticsTd}>UGX {Number(service.price || 0).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {activeTab === 'shops' && (
-            <table style={analyticsTable}>
-              <thead>
-                <tr>
-                  <th style={analyticsTh}>#</th>
-                  <th style={analyticsTh}>Shop</th>
-                  <th style={analyticsTh}>Revenue</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topShops.slice(0, 10).map((shop, i) => (
-                  <tr key={i} style={analyticsTr}>
-                    <td style={analyticsTd}>{i + 1}</td>
-                    <td style={analyticsTd}>{shop.shops?.name || 'Unknown'}</td>
-                    <td style={analyticsTd}>UGX {Number(shop.amount || 0).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {activeTab === 'providers' && (
-            <table style={analyticsTable}>
-              <thead>
-                <tr>
-                  <th style={analyticsTh}>#</th>
-                  <th style={analyticsTh}>Provider</th>
-                  <th style={analyticsTh}>Specialty</th>
-                  <th style={analyticsTh}>Rating</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topProviders.slice(0, 10).map((provider, i) => (
-                  <tr key={i} style={analyticsTr}>
-                    <td style={analyticsTd}>{i + 1}</td>
-                    <td style={analyticsTd}>{provider.full_name || 'Unknown'}</td>
-                    <td style={analyticsTd}>{provider.specialty || '—'}</td>
-                    <td style={analyticsTd}>⭐ {Number(provider.rating || 0).toFixed(1)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  // ============================================
-  // STAT CARDS WITH ICONS
-  // ============================================
-  const statCards = [
-    { label: 'Total Users', value: stats.totalUsers.toLocaleString(), icon: FiUsers, color: '#4A7DFF', bg: '#EEF3FF' },
-    { label: 'Total Businesses', value: stats.totalShops.toLocaleString(), icon: FiShoppingBag, color: '#4CAF50', bg: '#E8F5E9' },
-    { label: 'Total Products', value: stats.totalProducts.toLocaleString(), icon: FiPackage, color: '#FF9800', bg: '#FFF3E0' },
-    { label: 'Total Services', value: stats.totalServices.toLocaleString(), icon: FiTool, color: '#9C27B0', bg: '#F3E5F5' },
-    { label: 'Total Revenue', value: `UGX ${(stats.totalRevenue / 1000000).toFixed(1)}M`, icon: FiDollarSign, color: '#F44336', bg: '#FFEBEE' },
-    { label: 'Pending Verification', value: stats.pendingVerification.toLocaleString(), icon: FiCheckCircle, color: '#FF9800', bg: '#FFF3E0' },
-  ];
-
-  // ============================================
-  // LOADING STATE
-  // ============================================
-  if (loading) {
-    return (
-      <div style={{ padding: 40 }}>
-        <h1 style={{ fontSize: 26, fontWeight: 800, color: '#1F2F5F' }}>Dashboard</h1>
-        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 400 }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 40, marginBottom: 16 }}>⏳</div>
-            <p style={{ color: '#8E99B3' }}>Loading dashboard data...</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ============================================
-  // MAIN RENDER
-  // ============================================
+  const palette = tones[tone] ?? tones.primary;
   return (
-    <div style={{ padding: '30px 32px' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 28 }}>
-        <div>
-          <h1 style={{ fontSize: 26, fontWeight: 800, color: '#1F2F5F', margin: 0 }}>Dashboard</h1>
-          <p style={{ color: '#8E99B3', fontSize: 14, marginTop: 4 }}>Overview of Munolink platform performance.</p>
+    <div style={{ ...card, padding: 18, position: 'relative', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div
+          style={{
+            width: 38,
+            height: 38,
+            borderRadius: 11,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: palette.background,
+            color: palette.color,
+          }}
+        >
+          <Icon size={18} />
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 42, height: 42, borderRadius: 10, background: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #DCE5FF', position: 'relative', cursor: 'pointer' }}>
-            <FiBell size={20} color="#1F2F5F" />
-            {stats.pendingVerification > 0 && (
-              <span style={{ position: 'absolute', top: -4, right: -4, width: 18, height: 18, borderRadius: 9, background: '#F44336', color: '#FFFFFF', fontSize: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 }}>
-                {stats.pendingVerification}
-              </span>
-            )}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, background: '#4A7DFF', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFFFFF', fontWeight: 700, fontSize: 14 }}>
-              {adminInfo.initials}
-            </div>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#1F2F5F' }}>{adminInfo.name}</div>
-              <div style={{ fontSize: 10, color: '#8E99B3' }}>Super Admin</div>
-            </div>
-          </div>
-        </div>
+        {trend ? (
+          <span style={{ ...badgeStyle('success'), gap: 3 }}>
+            <FiArrowUpRight size={11} /> {trend}
+          </span>
+        ) : null}
       </div>
-
-      {/* Stats Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 16, marginBottom: 24 }}>
-        {statCards.map((stat, i) => {
-          const Icon = stat.icon;
-          return (
-            <div key={i} style={{ background: '#FFFFFF', borderRadius: 16, padding: 18, border: '1px solid #EEF3FF' }}>
-              <div style={{ width: 42, height: 42, borderRadius: 12, background: stat.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
-                <Icon size={22} color={stat.color} />
-              </div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: '#1F2F5F', marginBottom: 4 }}>{stat.value}</div>
-              <div style={{ fontSize: 12, color: '#8E99B3', fontWeight: 500 }}>{stat.label}</div>
-              {stat.label === 'Pending Verification' && stats.pendingVerification > 0 && (
-                <div style={{ fontSize: 11, color: '#FF9800', fontWeight: 600, marginTop: 6 }}>⚠️ Action required</div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Interactive Map */}
-      {renderInteractiveMap()}
-
-      {/* Charts */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
-        <div style={{ background: '#FFFFFF', borderRadius: 16, padding: 20, border: '1px solid #EEF3FF' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <div>
-              <h3 style={{ fontSize: 16, fontWeight: 700, color: '#1F2F5F', margin: 0 }}>Revenue Overview</h3>
-              <p style={{ fontSize: 22, fontWeight: 800, color: '#1F2F5F', margin: '4px 0 0' }}>UGX {(stats.totalRevenue / 1000000).toFixed(1)}M</p>
-            </div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, height: 160, paddingTop: 20 }}>
-            {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day, i) => {
-              const height = weeklyRevenue[i] || 10;
-              return (
-                <div key={day} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: '100%', maxWidth: 40, height: Math.max(height, 5), background: 'linear-gradient(180deg, #4A7DFF, #2E5FE6)', borderRadius: '8px 8px 4px 4px' }} />
-                  <span style={{ fontSize: 10, color: '#8E99B3', fontWeight: 500 }}>{day}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div style={{ background: '#FFFFFF', borderRadius: 16, padding: 20, border: '1px solid #EEF3FF' }}>
-          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#1F2F5F', margin: '0 0 16px' }}>Orders & Bookings Overview</h3>
-          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, height: 160, paddingTop: 20 }}>
-            {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day, i) => {
-              const orderHeight = Math.max((weeklyOrders[i] || 0) * 2, 5);
-              const bookingHeight = Math.max((weeklyBookings[i] || 0) * 2, 5);
-              return (
-                <div key={day} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                  <div style={{ display: 'flex', gap: 4 }}>
-                    <div style={{ width: 16, height: Math.min(orderHeight, 120), background: '#4A7DFF', borderRadius: '4px 4px 2px 2px' }} />
-                    <div style={{ width: 16, height: Math.min(bookingHeight, 120), background: '#4CAF50', borderRadius: '4px 4px 2px 2px' }} />
-                  </div>
-                  <span style={{ fontSize: 10, color: '#8E99B3', fontWeight: 500 }}>{day}</span>
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ display: 'flex', gap: 20, marginTop: 12, justifyContent: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: '#4A7DFF' }} /><span style={{ fontSize: 11, color: '#8E99B3' }}>Orders</span></div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: '#4CAF50' }} /><span style={{ fontSize: 11, color: '#8E99B3' }}>Bookings</span></div>
-          </div>
-        </div>
-      </div>
-
-      {/* Top Analytics */}
-      {renderTopAnalytics()}
-
-      {/* Bottom Section */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 0.8fr', gap: 16, marginTop: 24 }}>
-        <div style={{ background: '#FFFFFF', borderRadius: 16, padding: 20, border: '1px solid #EEF3FF' }}>
-          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#1F2F5F', margin: '0 0 16px' }}>
-            <FiClock size={16} style={{ marginRight: 8 }} /> Recent Transactions
-          </h3>
-          {recentTransactions.length === 0 ? (
-            <p style={{ textAlign: 'center', color: '#8E99B3', padding: 20 }}>No transactions yet</p>
-          ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid #EEF3FF' }}>
-                  <th style={{ textAlign: 'left', padding: '10px 8px', fontSize: 11, color: '#8E99B3', fontWeight: 600 }}>ID</th>
-                  <th style={{ textAlign: 'left', padding: '10px 8px', fontSize: 11, color: '#8E99B3', fontWeight: 600 }}>Type</th>
-                  <th style={{ textAlign: 'left', padding: '10px 8px', fontSize: 11, color: '#8E99B3', fontWeight: 600 }}>Amount</th>
-                  <th style={{ textAlign: 'left', padding: '10px 8px', fontSize: 11, color: '#8E99B3', fontWeight: 600 }}>Status</th>
-                  <th style={{ textAlign: 'right', padding: '10px 8px', fontSize: 11, color: '#8E99B3', fontWeight: 600 }}>Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentTransactions.map((txn) => (
-                  <tr key={txn.id} style={{ borderBottom: '1px solid #F5F6FA' }}>
-                    <td style={{ padding: '10px 8px', fontSize: 12, fontWeight: 600, color: '#4A7DFF' }}>{txn.reference?.slice(-8) || txn.id?.slice(-8) || '---'}</td>
-                    <td style={{ padding: '10px 8px', fontSize: 12, color: '#1F2F5F' }}>{txn.type || 'order'}</td>
-                    <td style={{ padding: '10px 8px', fontSize: 12, fontWeight: 600, color: '#1F2F5F' }}>UGX {Number(txn.amount || 0).toLocaleString()}</td>
-                    <td style={{ padding: '10px 8px' }}>
-                      <span style={{ 
-                        padding: '4px 10px', 
-                        borderRadius: 12, 
-                        fontSize: 10, 
-                        fontWeight: 700, 
-                        background: txn.status === 'completed' ? '#E8F5E9' : txn.status === 'pending' ? '#FFF3E0' : '#FFEBEE',
-                        color: txn.status === 'completed' ? '#4CAF50' : txn.status === 'pending' ? '#FF9800' : '#F44336'
-                      }}>
-                        {txn.status || 'pending'}
-                      </span>
-                    </td>
-                    <td style={{ padding: '10px 8px', fontSize: 11, color: '#8E99B3', textAlign: 'right' }}>
-                      {txn.created_at ? timeAgo(txn.created_at) : '--'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-
-        <div style={{ background: '#FFFFFF', borderRadius: 16, padding: 20, border: '1px solid #EEF3FF' }}>
-          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#1F2F5F', margin: '0 0 16px' }}>
-            <FiTrendingUp size={16} style={{ marginRight: 8 }} /> Platform Activity
-          </h3>
-          {recentActivity.length === 0 ? (
-            <p style={{ textAlign: 'center', color: '#8E99B3', padding: 20 }}>No recent activity</p>
-          ) : (
-            recentActivity.map((item, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 0', borderBottom: i < recentActivity.length - 1 ? '1px solid #F5F6FA' : 'none' }}>
-                <div style={{ width: 32, height: 32, borderRadius: 8, background: item.color + '20', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0 }}>{item.icon}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12, color: '#1F2F5F', fontWeight: 500 }}>{item.text}</div>
-                  <div style={{ fontSize: 10, color: '#8E99B3', marginTop: 2 }}>{item.time}</div>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        <div style={{ background: '#FFFFFF', borderRadius: 16, padding: 20, border: '1px solid #EEF3FF' }}>
-          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#1F2F5F', margin: '0 0 16px' }}>
-            <FiBarChart2 size={16} style={{ marginRight: 8 }} /> Top Categories
-          </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {topCategories.map((cat) => (
-              <div key={cat.name}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 500, color: '#1F2F5F' }}>{cat.name}</span>
-                  <span style={{ fontSize: 11, color: '#8E99B3' }}>{cat.pct}%</span>
-                </div>
-                <div style={{ width: '100%', height: 6, borderRadius: 3, background: '#F5F6FA', overflow: 'hidden' }}>
-                  <div style={{ width: `${cat.pct}%`, height: '100%', borderRadius: 3, background: cat.color }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div style={{ textAlign: 'center', padding: '20px 0', marginTop: 24, borderTop: '1px solid #EEF3FF', color: '#8E99B3', fontSize: 12 }}>
-        © 2025 Munolink. All rights reserved. · Version 1.0.0
-      </div>
+      <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: -0.6, lineHeight: 1 }}>{value}</div>
+      <div style={{ marginTop: 6, fontSize: 12, fontWeight: 600, color: colors.textMuted }}>{label}</div>
+      {detail ? <div style={{ marginTop: 3, fontSize: 11, color: colors.textDim }}>{detail}</div> : null}
     </div>
   );
 }
 
-// ============================================
-// MAP STYLES (UNCHANGED)
-// ============================================
-const mapContainer = {
-  background: '#FFFFFF',
-  borderRadius: 16,
-  padding: 20,
-  border: '1px solid #EEF3FF',
-  marginBottom: 24,
-  overflow: 'hidden',
-};
+function SectionCard({ title, subtitle, action, children, style }) {
+  return (
+    <section style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', minWidth: 0, ...style }}>
+      <header style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
+        <div>
+          <h2 style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>{title}</h2>
+          {subtitle ? <p style={{ marginTop: 3, fontSize: 11, color: colors.textMuted }}>{subtitle}</p> : null}
+        </div>
+        {action}
+      </header>
+      {children}
+    </section>
+  );
+}
 
-const mapHeader = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'flex-start',
-  marginBottom: 12,
-  flexWrap: 'wrap',
-  gap: 12,
-};
+function EmptyState({ label = 'No data yet' }) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        minHeight: 140,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: colors.textDim,
+        fontSize: 12,
+        border: `1px dashed ${colors.border}`,
+        borderRadius: radii.md,
+      }}
+    >
+      {label}
+    </div>
+  );
+}
 
-const mapTitle = {
-  fontSize: 16,
-  fontWeight: 700,
-  color: '#1F2F5F',
-  margin: 0,
-};
+function Avatar({ name, src, size = 34 }) {
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt={name}
+        style={{ width: size, height: size, borderRadius: 10, objectFit: 'cover', flexShrink: 0 }}
+      />
+    );
+  }
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: 10,
+        background: colors.primarySoft,
+        color: colors.primary,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontWeight: 800,
+        fontSize: size * 0.34,
+        flexShrink: 0,
+      }}
+    >
+      {initials(name)}
+    </div>
+  );
+}
 
-const mapSubtitle = {
-  fontSize: 12,
-  color: '#8E99B3',
-  marginTop: 2,
-};
+export default function Dashboard() {
+  const { dataSourceLabel } = useAppSettings();
+  const [state, setState] = useState({
+    loading: true,
+    error: '',
+    warnings: [],
+    users: [],
+    catalog: [],
+    services: [],
+    shops: [],
+    likes: [],
+    saves: [],
+    comments: [],
+    follows: [],
+    reviews: [],
+    featured: [],
+    transactions: [],
+    refreshedAt: null,
+  });
 
-const mapControls = {
-  display: 'flex',
-  gap: 10,
-  alignItems: 'center',
-  flexWrap: 'wrap',
-};
+  const load = useCallback(async () => {
+    setState((current) => ({ ...current, loading: true, error: '' }));
+    const results = await Promise.all([
+      db('users')
+        .select(
+          'id,full_name,email,avatar_url,role,kyc_verified,wallet_balance,lifetime_savings,location_city,location_country,latitude,longitude,created_at'
+        )
+        .limit(1000),
+      db('catalog')
+        .select(
+          'id,user_id,name,category,price,images,video_thumbnail,view_count,like_count,save_count,comment_count,share_count,created_at,is_active,status,location'
+        )
+        .limit(1000),
+      db('service_catalog').select('id,name,category,price_type,created_at,is_active').limit(1000),
+      db('shops')
+        .select('id,owner_id,name,category,city,logo_url,rating,is_verified,latitude,longitude,created_at')
+        .limit(1000),
+      db('likes').select('id,user_id,post_id,created_at').limit(1000),
+      db('saves').select('id,user_id,post_id,created_at').limit(1000),
+      db('comments').select('id,user_id,post_id,content,created_at').limit(1000),
+      db('follows').select('id,follower_id,following_id,created_at').limit(1000),
+      db('reviews').select('id,customer_id,business_id,rating,comment,status,created_at').limit(1000),
+      db('featured_opportunities').select('*').limit(200),
+      db('transactions').select('id,amount,status,type,created_at').limit(1000),
+    ]);
 
-const searchInputMap = {
-  padding: '8px 14px',
-  borderRadius: 8,
-  border: '1px solid #DCE5FF',
-  fontSize: 13,
-  width: 200,
-  outline: 'none',
-};
+    const warnings = results
+      .map((result, index) => (result?.error?.message ? `source ${index + 1}: ${result.error.message}` : null))
+      .filter(Boolean);
 
-const filterSelectMap = {
-  padding: '8px 14px',
-  borderRadius: 8,
-  border: '1px solid #DCE5FF',
-  fontSize: 13,
-  background: '#FFFFFF',
-  cursor: 'pointer',
-};
+    setState({
+      loading: false,
+      error: '',
+      warnings,
+      users: asArray(results[0]),
+      catalog: asArray(results[1]),
+      services: asArray(results[2]),
+      shops: asArray(results[3]),
+      likes: asArray(results[4]),
+      saves: asArray(results[5]),
+      comments: asArray(results[6]),
+      follows: asArray(results[7]),
+      reviews: asArray(results[8]),
+      featured: asArray(results[9]),
+      transactions: asArray(results[10]),
+      refreshedAt: new Date(),
+    });
+  }, []);
 
-const mapLegend = {
-  display: 'flex',
-  gap: 16,
-  marginBottom: 12,
-  flexWrap: 'wrap',
-};
+  useEffect(() => {
+    load();
+  }, [load]);
 
-const legendItem = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 6,
-  fontSize: 12,
-  color: '#1F2F5F',
-};
+  const derived = useMemo(() => {
+    const now = Date.now();
+    const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+    const userById = new Map(state.users.map((user) => [user.id, user]));
+    const catalogById = new Map(state.catalog.map((item) => [item.id, item]));
 
-const legendDot = {
-  width: 12,
-  height: 12,
-  borderRadius: '50%',
-};
+    const authorStats = new Map();
+    for (const item of state.catalog) {
+      if (!item.user_id) continue;
+      const current = authorStats.get(item.user_id) ?? { posts: 0, likes: 0, saves: 0, comments: 0 };
+      current.posts += 1;
+      current.likes += Number(item.like_count || 0);
+      current.saves += Number(item.save_count || 0);
+      current.comments += Number(item.comment_count || 0);
+      authorStats.set(item.user_id, current);
+    }
 
-const mapWrapper = {
-  height: 500,
-  borderRadius: 12,
-  overflow: 'hidden',
-  position: 'relative',
-};
+    const postsWithScore = state.catalog.map((item) => {
+      const score =
+        Number(item.view_count || 0) * 0.1 +
+        Number(item.like_count || 0) * 3 +
+        Number(item.save_count || 0) * 4 +
+        Number(item.comment_count || 0) * 5 +
+        Number(item.share_count || 0) * 6;
+      return { ...item, score, author: userById.get(item.user_id) };
+    });
 
-const mapStyle = {
-  height: '100%',
-  width: '100%',
-};
+    const topPosts = [...postsWithScore].sort((a, b) => b.score - a.score).slice(0, 6);
 
-const popupStyle = {
-  minWidth: 200,
-  maxWidth: 300,
-  padding: 4,
-};
+    const categoryMap = new Map();
+    for (const item of state.catalog) {
+      const key = item.category || 'Uncategorized';
+      const current = categoryMap.get(key) ?? { name: key, count: 0, engagement: 0 };
+      current.count += 1;
+      current.engagement +=
+        Number(item.like_count || 0) + Number(item.save_count || 0) + Number(item.comment_count || 0);
+      categoryMap.set(key, current);
+    }
+    const topCategories = [...categoryMap.values()].sort((a, b) => b.count - a.count).slice(0, 6);
 
-const popupHeader = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  marginBottom: 8,
-  borderBottom: '1px solid #EEF3FF',
-  paddingBottom: 6,
-};
+    const days = [];
+    for (let index = 13; index >= 0; index -= 1) {
+      const date = new Date(now - index * 24 * 60 * 60 * 1000);
+      const key = dayKey(date);
+      days.push({
+        key,
+        label: date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+        posts: 0,
+        users: 0,
+      });
+    }
+    const dayMap = new Map(days.map((day) => [day.key, day]));
+    for (const item of state.catalog) {
+      const bucket = dayMap.get(dayKey(item.created_at));
+      if (bucket) bucket.posts += 1;
+    }
+    for (const user of state.users) {
+      const bucket = dayMap.get(dayKey(user.created_at));
+      if (bucket) bucket.users += 1;
+    }
 
-const popupIcon = {
-  fontSize: 18,
-};
+    const engagement = [
+      { name: 'Likes', value: state.likes.length, color: ENGAGEMENT_COLORS[0] },
+      { name: 'Saves', value: state.saves.length, color: ENGAGEMENT_COLORS[1] },
+      { name: 'Comments', value: state.comments.length, color: ENGAGEMENT_COLORS[2] },
+      { name: 'Follows', value: state.follows.length, color: ENGAGEMENT_COLORS[3] },
+      { name: 'Reviews', value: state.reviews.length, color: ENGAGEMENT_COLORS[4] },
+    ];
+    const totalEngagement = engagement.reduce((sum, item) => sum + item.value, 0);
 
-const popupName = {
-  fontSize: 14,
-  fontWeight: 700,
-  color: '#1F2F5F',
-};
+    const activeFeatured = state.featured.filter((item) => {
+      const start = item.start_date ? new Date(item.start_date).getTime() : 0;
+      const end = item.end_date ? new Date(item.end_date).getTime() : Number.MAX_SAFE_INTEGER;
+      return start <= now && end >= now;
+    });
 
-const popupBody = {
-  fontSize: 12,
-  color: '#1F2F5F',
-  lineHeight: 1.6,
-};
+    const spotlight = activeFeatured.length
+      ? activeFeatured.slice(0, 5).map((entry) => {
+          const item =
+            entry.item_type === 'product' || entry.item_type === 'catalog'
+              ? catalogById.get(entry.item_id)
+              : null;
+          return {
+            id: entry.id,
+            label: entry.custom_label || item?.name || 'Featured opportunity',
+            itemType: entry.item_type,
+            priority: entry.priority,
+            item,
+          };
+        })
+      : topPosts.slice(0, 5).map((item) => ({
+          id: item.id,
+          label: item.name,
+          itemType: 'trending',
+          priority: Math.round(item.score),
+          item,
+        }));
 
-const tooltipStyle = {
-  fontSize: 11,
-  fontWeight: 600,
-  color: '#1F2F5F',
-  background: '#FFFFFF',
-  padding: '2px 8px',
-  borderRadius: 4,
-  boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-};
+    const roleMap = new Map();
+    for (const user of state.users) {
+      const role = user.role || 'customer';
+      roleMap.set(role, (roleMap.get(role) ?? 0) + 1);
+    }
+    const roles = [...roleMap.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count);
 
-// ============================================
-// ANALYTICS STYLES (UNCHANGED)
-// ============================================
-const analyticsContainer = {
-  background: '#FFFFFF',
-  borderRadius: 16,
-  border: '1px solid #EEF3FF',
-  overflow: 'hidden',
-  marginBottom: 24,
-};
+    const cityMap = new Map();
+    for (const user of state.users) {
+      const city = [user.location_city, user.location_country].filter(Boolean).join(', ') || 'Unknown';
+      cityMap.set(city, (cityMap.get(city) ?? 0) + 1);
+    }
+    const cities = [...cityMap.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
 
-const analyticsHeader = {
-  padding: '16px 20px',
-  borderBottom: '1px solid #EEF3FF',
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  flexWrap: 'wrap',
-  gap: 12,
-};
+    const mapUsers = state.users
+      .map((user) => ({
+        id: user.id,
+        name: user.full_name || user.email || 'Member',
+        latitude: Number(user.latitude),
+        longitude: Number(user.longitude),
+        city: user.location_city,
+      }))
+      .filter((user) => Number.isFinite(user.latitude) && Number.isFinite(user.longitude));
+    const mapShops = state.shops
+      .map((shop) => ({
+        id: shop.id,
+        name: shop.name,
+        latitude: Number(shop.latitude),
+        longitude: Number(shop.longitude),
+        city: shop.city,
+      }))
+      .filter((shop) => Number.isFinite(shop.latitude) && Number.isFinite(shop.longitude));
+    const mapCenter =
+      mapUsers.length || mapShops.length
+        ? [
+            (mapUsers[0]?.latitude ?? mapShops[0]?.latitude ?? 0.3476),
+            (mapUsers[0]?.longitude ?? mapShops[0]?.longitude ?? 32.5825),
+          ]
+        : [0.3476, 32.5825];
 
-const analyticsTitle = {
-  fontSize: 16,
-  fontWeight: 700,
-  color: '#1F2F5F',
-  margin: 0,
-};
+    const walletTotal = state.users.reduce((sum, user) => sum + Number(user.wallet_balance || 0), 0);
+    const savingsTotal = state.users.reduce((sum, user) => sum + Number(user.lifetime_savings || 0), 0);
+    const verified = state.users.filter((user) => Number(user.kyc_verified) === 1 || user.kyc_verified === true).length;
+    const newUsers = state.users.filter((user) => new Date(user.created_at).getTime() >= weekAgo).length;
+    const activePosts = state.catalog.filter((item) => item.is_active === 1 || item.is_active === true).length;
+    const transactionVolume = state.transactions.reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+    const completedTransactions = state.transactions.filter((tx) => tx.status === 'completed').length;
 
-const analyticsTabs = {
-  display: 'flex',
-  gap: 4,
-  flexWrap: 'wrap',
-};
+    const activity = [
+      ...state.users.map((user) => ({
+        id: `user-${user.id}`,
+        type: 'Member joined',
+        title: user.full_name || user.email || 'New member',
+        meta: user.role || 'customer',
+        avatar: user.avatar_url,
+        createdAt: user.created_at,
+        tone: 'primary',
+      })),
+      ...state.catalog.map((item) => ({
+        id: `post-${item.id}`,
+        type: 'Post published',
+        title: item.name,
+        meta: item.category || 'General',
+        createdAt: item.created_at,
+        tone: 'success',
+      })),
+      ...state.likes.map((like) => ({
+        id: `like-${like.id}`,
+        type: 'Like',
+        title: userById.get(like.user_id)?.full_name || 'A member',
+        meta: catalogById.get(like.post_id)?.name || 'a post',
+        createdAt: like.created_at,
+        tone: 'pink',
+      })),
+      ...state.comments.map((comment) => ({
+        id: `comment-${comment.id}`,
+        type: 'Comment',
+        title: userById.get(comment.user_id)?.full_name || 'A member',
+        meta: catalogById.get(comment.post_id)?.name || 'a post',
+        createdAt: comment.created_at,
+        tone: 'purple',
+      })),
+      ...state.follows.map((follow) => ({
+        id: `follow-${follow.id}`,
+        type: 'Follow',
+        title: userById.get(follow.follower_id)?.full_name || 'A member',
+        meta: userById.get(follow.following_id)?.full_name || 'a creator',
+        createdAt: follow.created_at,
+        tone: 'warning',
+      })),
+    ]
+      .filter((entry) => entry.createdAt)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 9);
 
-const analyticsTab = {
-  padding: '6px 14px',
-  borderRadius: 8,
-  border: 'none',
-  fontSize: 12,
-  fontWeight: 600,
-  cursor: 'pointer',
-  transition: 'all 0.2s',
-};
+    return {
+      topPosts,
+      topCategories,
+      days,
+      engagement,
+      totalEngagement,
+      activeFeatured,
+      spotlight,
+      roles,
+      cities,
+      mapUsers,
+      mapShops,
+      mapCenter,
+      walletTotal,
+      savingsTotal,
+      verified,
+      newUsers,
+      activePosts,
+      transactionVolume,
+      completedTransactions,
+      activity,
+      authorStats,
+    };
+  }, [state]);
 
-const analyticsTableWrap = {
-  padding: '0 20px 20px',
-  overflowX: 'auto',
-};
+  const {
+    topPosts,
+    topCategories,
+    days,
+    engagement,
+    totalEngagement,
+    activeFeatured,
+    spotlight,
+    roles,
+    cities,
+    mapUsers,
+    mapShops,
+    mapCenter,
+    walletTotal,
+    savingsTotal,
+    verified,
+    newUsers,
+    activePosts,
+    transactionVolume,
+    completedTransactions,
+    activity,
+  } = derived;
 
-const analyticsTable = {
-  width: '100%',
-  borderCollapse: 'collapse',
-  marginTop: 16,
-};
+  const engagementTotalForPie = engagement.reduce((sum, item) => sum + item.value, 0);
 
-const analyticsTh = {
-  textAlign: 'left',
-  padding: '10px 12px',
-  fontSize: 11,
-  color: '#8E99B3',
-  fontWeight: 600,
-  textTransform: 'uppercase',
-  borderBottom: '2px solid #EEF3FF',
-};
+  return (
+    <div style={{ padding: '28px 30px 52px', maxWidth: 1580, margin: '0 auto' }}>
+      <header
+        style={{
+          display: 'flex',
+          alignItems: 'flex-end',
+          justifyContent: 'space-between',
+          gap: 18,
+          flexWrap: 'wrap',
+          marginBottom: 24,
+        }}
+      >
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <span style={{ ...badgeStyle('primary'), letterSpacing: 0.6 }}>
+              <FiZap size={11} /> Content command center
+            </span>
+            <span style={{ ...badgeStyle('neutral') }}>{dataSourceLabel}</span>
+          </div>
+          <h1 style={{ fontSize: 30, fontWeight: 800, letterSpacing: -0.9, lineHeight: 1.1 }}>
+            Platform pulse
+          </h1>
+          <p style={{ marginTop: 6, fontSize: 13, color: colors.textMuted }}>
+            People, posts, services and the engagement loops connecting them.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 11, color: colors.textDim }}>
+            {state.refreshedAt ? `Updated ${timeAgo(state.refreshedAt)}` : 'Loading…'}
+          </span>
+          <button type="button" onClick={load} style={ghostButton} disabled={state.loading}>
+            <FiRefreshCw size={15} style={{ animation: state.loading ? 'spin 1s linear infinite' : 'none' }} />
+            Refresh
+          </button>
+        </div>
+      </header>
 
-const analyticsTd = {
-  padding: '10px 12px',
-  fontSize: 13,
-  color: '#1F2F5F',
-  borderBottom: '1px solid #F5F6FA',
-};
+      {state.warnings.length ? (
+        <div
+          style={{
+            marginBottom: 18,
+            padding: '10px 14px',
+            borderRadius: radii.md,
+            border: `1px solid rgba(241,196,15,0.28)`,
+            background: colors.warningSoft,
+            color: colors.warning,
+            fontSize: 11,
+          }}
+        >
+          Some sources are unavailable: {state.warnings.slice(0, 2).join(' · ')}
+        </div>
+      ) : null}
 
-const analyticsTr = {
-  transition: 'background 0.2s',
-  ':hover': { background: '#F8FAFF' },
-};
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+          gap: 14,
+          marginBottom: 18,
+        }}
+      >
+        <StatCard icon={FiUsers} label="Members" value={formatNumber(state.users.length)} detail={`${newUsers} joined this week`} tone="primary" />
+        <StatCard icon={FiPackage} label="Content posts" value={formatNumber(state.catalog.length)} detail={`${activePosts} active`} tone="success" />
+        <StatCard icon={FiShoppingBag} label="Services" value={formatNumber(state.services.length)} detail={`${state.shops.length} shops`} tone="teal" />
+        <StatCard icon={FiHeart} label="Engagement" value={formatNumber(totalEngagement)} detail={`${state.comments.length} comments · ${state.follows.length} follows`} tone="pink" />
+        <StatCard icon={FiCheckCircle} label="Verified members" value={formatNumber(verified)} detail={`${state.users.length ? Math.round((verified / state.users.length) * 100) : 0}% of members`} tone="purple" />
+        <StatCard icon={FiCreditCard} label="Wallet balance" value={formatMoney(walletTotal)} detail={`${formatMoney(savingsTotal)} lifetime savings`} tone="warning" />
+        <StatCard icon={FiActivity} label="Transactions" value={formatNumber(state.transactions.length)} detail={`${completedTransactions} completed · ${formatMoney(transactionVolume)}`} tone="primary" />
+        <StatCard icon={FiStar} label="Featured live" value={formatNumber(activeFeatured.length)} detail={activeFeatured.length ? 'Curated by admins' : 'Using trending fallback'} tone="teal" />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.6fr) minmax(280px, 0.9fr)', gap: 16, marginBottom: 16 }}>
+        <SectionCard title="Content growth" subtitle="New posts and members over the last 14 days">
+          {state.loading ? (
+            <EmptyState label="Loading growth…" />
+          ) : (
+            <div style={{ height: 250 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={days} margin={{ top: 8, right: 8, bottom: 0, left: -18 }}>
+                  <defs>
+                    <linearGradient id="postsGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={colors.primary} stopOpacity={0.5} />
+                      <stop offset="100%" stopColor={colors.primary} stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="usersGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={colors.success} stopOpacity={0.42} />
+                      <stop offset="100%" stopColor={colors.success} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fill: colors.textDim, fontSize: 10 }} axisLine={false} tickLine={false} interval={1} />
+                  <YAxis tick={{ fill: colors.textDim, fontSize: 10 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                  <RechartsTooltip
+                    contentStyle={{
+                      background: colors.surface,
+                      border: `1px solid ${colors.borderStrong}`,
+                      borderRadius: 12,
+                      fontSize: 12,
+                      color: colors.text,
+                    }}
+                  />
+                  <Area type="monotone" dataKey="posts" name="Posts" stroke={colors.primary} strokeWidth={2.5} fill="url(#postsGradient)" />
+                  <Area type="monotone" dataKey="users" name="Members" stroke={colors.success} strokeWidth={2} fill="url(#usersGradient)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 18, marginTop: 8 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: colors.textMuted }}>
+              <span style={{ width: 8, height: 8, borderRadius: 99, background: colors.primary }} /> Posts
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: colors.textMuted }}>
+              <span style={{ width: 8, height: 8, borderRadius: 99, background: colors.success }} /> Members
+            </span>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Engagement mix" subtitle={`${formatNumber(totalEngagement)} total signals`}>
+          {engagementTotalForPie ? (
+            <>
+              <div style={{ height: 178, position: 'relative' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={engagement}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={56}
+                      outerRadius={82}
+                      paddingAngle={3}
+                      stroke="none"
+                    >
+                      {engagement.map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <RechartsTooltip
+                      contentStyle={{
+                        background: colors.surface,
+                        border: `1px solid ${colors.borderStrong}`,
+                        borderRadius: 12,
+                        fontSize: 12,
+                        color: colors.text,
+                      }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  <div style={{ fontSize: 24, fontWeight: 800 }}>{formatNumber(totalEngagement)}</div>
+                  <div style={{ fontSize: 10, color: colors.textMuted }}>signals</div>
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 6 }}>
+                {engagement.map((item) => (
+                  <div key={item.name} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11 }}>
+                    <span style={{ width: 7, height: 7, borderRadius: 99, background: item.color }} />
+                    <span style={{ color: colors.textMuted, flex: 1 }}>{item.name}</span>
+                    <span style={{ fontWeight: 700 }}>{formatNumber(item.value)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <EmptyState label="No engagement recorded yet" />
+          )}
+        </SectionCard>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.25fr) minmax(0, 0.85fr) minmax(0, 0.9fr)', gap: 16, marginBottom: 16 }}>
+        <SectionCard title="Top performing posts" subtitle="Ranked by views, likes, saves, comments and shares">
+          {topPosts.length ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {topPosts.map((post, index) => (
+                <div
+                  key={post.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 11,
+                    padding: '9px 10px',
+                    borderRadius: radii.md,
+                    background: index === 0 ? colors.primarySoft : colors.surfaceAlt,
+                    border: `1px solid ${index === 0 ? colors.primaryBorder : 'transparent'}`,
+                  }}
+                >
+                  <span style={{ width: 18, fontSize: 11, fontWeight: 800, color: index === 0 ? colors.primary : colors.textDim }}>
+                    {String(index + 1).padStart(2, '0')}
+                  </span>
+                  <Avatar name={post.name} src={post.video_thumbnail || post.images} size={36} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {post.name}
+                    </div>
+                    <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 2 }}>
+                      {post.author?.full_name || 'Unknown creator'} · {post.category || 'General'}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800 }}>{formatNumber(post.like_count)}</div>
+                    <div style={{ fontSize: 9, color: colors.textDim }}>likes</div>
+                  </div>
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800 }}>{formatNumber(post.view_count)}</div>
+                    <div style={{ fontSize: 9, color: colors.textDim }}>views</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState label="No posts yet" />
+          )}
+        </SectionCard>
+
+        <SectionCard title="Top categories" subtitle="Where content is clustering">
+          {topCategories.length ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {topCategories.map((category) => {
+                const max = topCategories[0]?.count || 1;
+                return (
+                  <div key={category.name}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 5 }}>
+                      <span style={{ color: colors.textMuted, fontWeight: 600 }}>{category.name}</span>
+                      <span style={{ fontWeight: 700 }}>{formatNumber(category.count)}</span>
+                    </div>
+                    <div style={{ height: 6, borderRadius: 99, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          width: `${Math.max(6, (category.count / max) * 100)}%`,
+                          height: '100%',
+                          borderRadius: 99,
+                          background: `linear-gradient(90deg, ${colors.primary}, ${colors.purple})`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <EmptyState label="No categories yet" />
+          )}
+        </SectionCard>
+
+        <SectionCard title="Community map" subtitle={`${mapUsers.length} members · ${mapShops.length} shops located`}>
+          {mapUsers.length || mapShops.length ? (
+            <div style={{ height: 262, borderRadius: radii.md, overflow: 'hidden', border: `1px solid ${colors.border}` }}>
+              <MapContainer center={mapCenter} zoom={6} scrollWheelZoom={false} style={{ height: '100%', width: '100%' }} attributionControl={false}>
+                <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+                {mapUsers.slice(0, 250).map((user) => (
+                  <CircleMarker
+                    key={`user-${user.id}`}
+                    center={[user.latitude, user.longitude]}
+                    radius={5}
+                    pathOptions={{ color: colors.primary, fillColor: colors.primary, fillOpacity: 0.7, weight: 1 }}
+                  >
+                    <Popup>
+                      <strong>{user.name}</strong>
+                      <br />
+                      {user.city || 'Member'}
+                    </Popup>
+                  </CircleMarker>
+                ))}
+                {mapShops.slice(0, 120).map((shop) => (
+                  <CircleMarker
+                    key={`shop-${shop.id}`}
+                    center={[shop.latitude, shop.longitude]}
+                    radius={6}
+                    pathOptions={{ color: colors.success, fillColor: colors.success, fillOpacity: 0.7, weight: 1 }}
+                  >
+                    <Popup>
+                      <strong>{shop.name}</strong>
+                      <br />
+                      {shop.city || 'Shop'}
+                    </Popup>
+                  </CircleMarker>
+                ))}
+              </MapContainer>
+            </div>
+          ) : (
+            <EmptyState label="No location data yet" />
+          )}
+          <div style={{ display: 'flex', gap: 16, marginTop: 10 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: colors.textMuted }}>
+              <span style={{ width: 8, height: 8, borderRadius: 99, background: colors.primary }} /> Members
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: colors.textMuted }}>
+              <span style={{ width: 8, height: 8, borderRadius: 99, background: colors.success }} /> Shops
+            </span>
+          </div>
+        </SectionCard>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 16 }}>
+        <SectionCard title="Recent activity" subtitle="Latest people, posts and interactions">
+          {activity.length ? (
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {activity.map((entry) => (
+                <div
+                  key={entry.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '9px 0',
+                    borderBottom: `1px solid ${colors.border}`,
+                  }}
+                >
+                  <Avatar name={entry.title} src={entry.avatar} size={30} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {entry.title}
+                    </div>
+                    <div style={{ fontSize: 10, color: colors.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {entry.meta}
+                    </div>
+                  </div>
+                  <span style={{ ...badgeStyle(entry.tone), fontSize: 9 }}>{entry.type}</span>
+                  <span style={{ fontSize: 9, color: colors.textDim, flexShrink: 0, width: 58, textAlign: 'right' }}>
+                    {timeAgo(entry.createdAt)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState label="No activity yet" />
+          )}
+        </SectionCard>
+
+        <SectionCard
+          title="Featured spotlight"
+          subtitle={activeFeatured.length ? `${activeFeatured.length} active curated placements` : 'No active placements · showing trending fallback'}
+          action={<span style={badgeStyle(activeFeatured.length ? 'success' : 'warning')}>{activeFeatured.length ? 'Curated' : 'Fallback'}</span>}
+        >
+          {spotlight.length ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {spotlight.map((entry) => (
+                <div
+                  key={entry.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '9px 10px',
+                    borderRadius: radii.md,
+                    background: colors.surfaceAlt,
+                    border: `1px solid ${colors.border}`,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: 9,
+                      background: entry.itemType === 'trending' ? colors.warningSoft : colors.purpleSoft,
+                      color: entry.itemType === 'trending' ? colors.warning : colors.purple,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {entry.itemType === 'trending' ? <FiTrendingUp size={15} /> : <FiZap size={15} />}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {entry.label}
+                    </div>
+                    <div style={{ fontSize: 10, color: colors.textMuted }}>
+                      {entry.itemType} · priority {entry.priority ?? 0}
+                    </div>
+                  </div>
+                  {entry.item ? (
+                    <span style={{ fontSize: 10, color: colors.textDim }}>{formatNumber(entry.item.like_count)} likes</span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState label="No featured items yet" />
+          )}
+        </SectionCard>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 16, marginTop: 16 }}>
+        <SectionCard title="Wallet & trust snapshot" subtitle="Keep money and verification visible as the platform scales">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ ...panel, padding: 14 }}>
+              <div style={{ fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>Wallet float</div>
+              <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4 }}>{formatMoney(walletTotal)}</div>
+            </div>
+            <div style={{ ...panel, padding: 14 }}>
+              <div style={{ fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>Lifetime savings</div>
+              <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4 }}>{formatMoney(savingsTotal)}</div>
+            </div>
+            <div style={{ ...panel, padding: 14 }}>
+              <div style={{ fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>KYC verified</div>
+              <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: colors.success }}>{formatNumber(verified)}</div>
+            </div>
+            <div style={{ ...panel, padding: 14 }}>
+              <div style={{ fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>Tx volume</div>
+              <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4 }}>{formatMoney(transactionVolume)}</div>
+            </div>
+          </div>
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: colors.textMuted, marginBottom: 6 }}>
+              <span>Verification coverage</span>
+              <span>{state.users.length ? Math.round((verified / state.users.length) * 100) : 0}%</span>
+            </div>
+            <div style={{ height: 8, borderRadius: 99, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+              <div
+                style={{
+                  width: `${state.users.length ? Math.min(100, (verified / state.users.length) * 100) : 0}%`,
+                  height: '100%',
+                  borderRadius: 99,
+                  background: `linear-gradient(90deg, ${colors.success}, ${colors.primary})`,
+                }}
+              />
+            </div>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Audience shape" subtitle="Roles and where members are based">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+            <div>
+              <div style={{ fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Roles</div>
+              <div style={{ height: 150 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={roles} layout="vertical" margin={{ top: 0, right: 0, bottom: 0, left: -22 }}>
+                    <XAxis type="number" hide />
+                    <YAxis type="category" dataKey="name" tick={{ fill: colors.textMuted, fontSize: 10 }} axisLine={false} tickLine={false} width={70} />
+                    <RechartsTooltip
+                      cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+                      contentStyle={{
+                        background: colors.surface,
+                        border: `1px solid ${colors.borderStrong}`,
+                        borderRadius: 12,
+                        fontSize: 12,
+                        color: colors.text,
+                      }}
+                    />
+                    <Bar dataKey="count" name="Members" fill={colors.primary} radius={[0, 6, 6, 0]} barSize={12} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Locations</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                {cities.length ? (
+                  cities.map((city) => (
+                    <div key={city.name} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11 }}>
+                      <FiMapPin size={12} style={{ color: colors.primary, flexShrink: 0 }} />
+                      <span style={{ flex: 1, color: colors.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {city.name}
+                      </span>
+                      <span style={{ fontWeight: 700 }}>{city.count}</span>
+                    </div>
+                  ))
+                ) : (
+                  <span style={{ fontSize: 11, color: colors.textDim }}>No location data</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </SectionCard>
+      </div>
+    </div>
+  );
+}

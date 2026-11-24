@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import { formatMoney } from '../lib/theme';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 
 export default function Reports() {
@@ -34,12 +35,12 @@ export default function Reports() {
   };
 
   const statCards = [
-    { label: 'Total Revenue', value: `UGX ${(stats.revenue / 1000000).toFixed(1)}M`, icon: '💰', color: '#4A7DFF', bg: '#EEF3FF', change: '+18.2%' },
+    { label: 'Total Revenue', value: formatMoney(stats.revenue), icon: '💰', color: '#4A7DFF', bg: '#EEF3FF', change: '+18.2%' },
     { label: 'Total Orders', value: stats.orders, icon: '📦', color: '#4CAF50', bg: '#E8F5E9', change: '+12.5%' },
     { label: 'Total Customers', value: stats.customers, icon: '👥', color: '#FF9800', bg: '#FFF3E0', change: '+24.8%' },
     { label: 'Total Businesses', value: stats.businesses, icon: '🏪', color: '#9C27B0', bg: '#F3E5F5', change: '+8.3%' },
-    { label: 'Total Payouts', value: `UGX ${(stats.payouts / 1000000).toFixed(1)}M`, icon: '💸', color: '#00BCD4', bg: '#E0F7FA', change: '+15.7%' },
-    { label: 'Platform Profit', value: `UGX ${(stats.profit / 1000000).toFixed(1)}M`, icon: '📈', color: '#F44336', bg: '#FFEBEE', change: '+22.1%' },
+    { label: 'Total Payouts', value: formatMoney(stats.payouts), icon: '💸', color: '#00BCD4', bg: '#E0F7FA', change: '+15.7%' },
+    { label: 'Platform Profit', value: formatMoney(stats.profit), icon: '📈', color: '#F44336', bg: '#FFEBEE', change: '+22.1%' },
   ];
 
   const quickReports = [

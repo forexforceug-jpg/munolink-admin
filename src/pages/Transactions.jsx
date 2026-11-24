@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import { formatMoney } from '../lib/theme';
 
 export default function Transactions() {
   const [transactions, setTransactions] = useState([]);
@@ -48,7 +49,7 @@ export default function Transactions() {
     { label: 'Pending', value: stats.pending, icon: '⏳', color: '#FF9800', bg: '#FFF3E0' },
     { label: 'Product Orders', value: stats.orders, icon: '📦', color: '#9C27B0', bg: '#F3E5F5' },
     { label: 'Bookings', value: stats.bookings, icon: '📅', color: '#00BCD4', bg: '#E0F7FA' },
-    { label: 'Revenue', value: `UGX ${(stats.revenue / 1000000).toFixed(1)}M`, icon: '💰', color: '#F44336', bg: '#FFEBEE' },
+    { label: 'Revenue', value: formatMoney(stats.revenue), icon: '💰', color: '#F44336', bg: '#FFEBEE' },
   ];
 
   const getStatusBadge = (status) => {
@@ -148,8 +149,8 @@ export default function Transactions() {
                           {t.type === 'service_booking' ? 'Booking' : 'Order'}
                         </span>
                       </td>
-                      <td style={{ ...td, fontWeight: 700 }}>UGX {Number(t.amount || 0).toLocaleString()}</td>
-                      <td style={td}>UGX {Number(t.discount_applied || 0).toLocaleString()}</td>
+                      <td style={{ ...td, fontWeight: 700 }}>{formatMoney(t.amount)}</td>
+                      <td style={td}>{formatMoney(t.discount_applied)}</td>
                       <td style={td}>{getStatusBadge(t.status)}</td>
                       <td style={td}>{t.created_at ? new Date(t.created_at).toLocaleDateString() : '—'}</td>
                     </tr>
@@ -214,16 +215,16 @@ export default function Transactions() {
             <h4 style={{ fontSize: 14, fontWeight: 700, color: '#1F2F5F', margin: '0 0 12px' }}>Financial Summary</h4>
             <div style={detailRow}>
               <span style={detailLabel}>Subtotal</span>
-              <span style={detailValue}>UGX {Number(selectedTxn.amount || 0).toLocaleString()}</span>
+              <span style={detailValue}>{formatMoney(selectedTxn.amount)}</span>
             </div>
             <div style={detailRow}>
               <span style={detailLabel}>Discount</span>
-              <span style={{ ...detailValue, color: '#4CAF50' }}>− UGX {Number(selectedTxn.discount_applied || 0).toLocaleString()}</span>
+              <span style={{ ...detailValue, color: '#4CAF50' }}>− {formatMoney(selectedTxn.discount_applied)}</span>
             </div>
             <div style={{ ...detailRow, borderBottom: 'none', paddingTop: 10, marginTop: 4, borderTop: '2px solid #EEF3FF' }}>
               <span style={{ fontSize: 13, fontWeight: 700, color: '#1F2F5F' }}>Total</span>
               <span style={{ fontSize: 16, fontWeight: 800, color: '#4CAF50' }}>
-                UGX {(Number(selectedTxn.amount || 0) - Number(selectedTxn.discount_applied || 0)).toLocaleString()}
+                {formatMoney(Number(selectedTxn.amount || 0) - Number(selectedTxn.discount_applied || 0))}
               </span>
             </div>
           </div>

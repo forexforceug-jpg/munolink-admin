@@ -1,1525 +1,1230 @@
-import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  FiActivity,
+  FiBriefcase,
+  FiCheckCircle,
+  FiClock,
+  FiDownload,
+  FiEdit2,
+  FiExternalLink,
+  FiFileText,
+  FiGlobe,
+  FiImage,
+  FiMapPin,
+  FiPackage,
+  FiPhone,
+  FiRefreshCw,
+  FiShield,
+  FiShoppingBag,
+  FiStar,
+  FiTrash2,
+  FiUser,
+  FiUsers,
+} from 'react-icons/fi';
+import { db } from '../lib/db';
+import { useAppSettings } from '../context/AppSettingsContext';
+import {
+  badgeStyle,
+  colors,
+  dangerButton,
+  formatNumber,
+  ghostButton,
+  initials,
+  input,
+  primaryButton,
+  radii,
+  timeAgo,
+} from '../lib/theme';
+import {
+  ConfirmDialog,
+  Drawer,
+  EmptyState,
+  Field,
+  Modal,
+  Notice,
+  PageHeader,
+  SearchInput,
+  StatCard,
+  TableShell,
+  Td,
+  Th,
+  Toggle,
+  Toolbar,
+} from '../components/ui';
+
+const TABS = [
+  { key: 'providers', label: 'Individual providers', short: 'Providers', table: 'individual_providers', icon: FiUser },
+  { key: 'institutions', label: 'Institutions', short: 'Institutions', table: 'institutions', icon: FiBriefcase },
+  { key: 'shops', label: 'Shops', short: 'Shops', table: 'shops', icon: FiShoppingBag },
+];
+
+const EMPTY_FORM = {
+  full_name: '',
+  display_name: '',
+  profession: '',
+  specialty: '',
+  phone: '',
+  email: '',
+  city: '',
+  area: '',
+  address: '',
+  bio: '',
+  website: '',
+  name: '',
+  type: '',
+  description: '',
+  category: '',
+  district: '',
+  discount_percentage: '',
+  is_verified: false,
+  is_active: true,
+  is_available_for_hire: true,
+  is_open: true,
+  is_anchor_partner: false,
+};
+
+const selectStyle = {
+  ...input,
+  width: 'auto',
+  minWidth: 145,
+  cursor: 'pointer',
+};
+
+function nameOf(item, tab) {
+  if (!item) return 'Unnamed business';
+  if (tab === 'providers') return item.full_name || item.display_name || item.email || 'Unnamed provider';
+  return item.name || 'Unnamed business';
+}
+
+function subtitleOf(item, tab) {
+  if (!item) return '';
+  if (tab === 'providers') return item.display_name || item.profession || item.specialty || 'Individual provider';
+  if (tab === 'institutions') return item.type || 'Institution';
+  return item.category || item.business_type || 'Shop';
+}
+
+function imageOf(item, tab) {
+  if (!item) return '';
+  if (tab === 'providers') return item.profile_image || '';
+  if (tab === 'institutions') return item.logo || item.cover_image || '';
+  return item.logo_url || item.banner_url || '';
+}
+
+function locationOf(item) {
+  if (!item) return '—';
+  return [item.city, item.area, item.district, item.address].filter(Boolean).join(', ') || '—';
+}
+
+function isActive(item, tab) {
+  if (!item) return false;
+  if (tab === 'providers') return item.is_active !== false;
+  return item.is_open !== false;
+}
+
+function statusOf(item, tab) {
+  if (!item) return { label: 'Unknown', tone: 'neutral' };
+  if (!item.is_verified) return { label: 'Pending', tone: 'warning' };
+  if (!isActive(item, tab)) return { label: 'Suspended', tone: 'danger' };
+  if (tab === 'providers' && item.is_available_for_hire) return { label: 'Available', tone: 'success' };
+  if (tab === 'shops' && item.is_anchor_partner) return { label: 'Partner', tone: 'primary' };
+  if (tab === 'shops' && item.is_open === false) return { label: 'Closed', tone: 'warning' };
+  return { label: tab === 'institutions' ? 'Open' : 'Active', tone: 'success' };
+}
+
+function ratingOf(item, reviews) {
+  const rating = Number(item?.rating ?? 0);
+  if (rating) return rating;
+  if (!reviews?.length) return 0;
+  return reviews.reduce((sum, review) => sum + Number(review.rating || 0), 0) / reviews.length;
+}
+
+function reviewCountOf(item, reviews) {
+  return Number(item?.review_count ?? reviews?.length ?? 0);
+}
 
 export default function Businesses() {
-  // State for different data types
-  const [individuals, setIndividuals] = useState([]);
+  const { formatMoney, dataSourceLabel } = useAppSettings();
+  const [tab, setTab] = useState('providers');
+  const [providers, setProviders] = useState([]);
   const [institutions, setInstitutions] = useState([]);
   const [shops, setShops] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState('individuals');
-  const [selectedItem, setSelectedItem] = useState(null);
-  const [search, setSearch] = useState('');
-  const [page, setPage] = useState(1);
-  const pageSize = 12;
-
-  // Detail panel states
-  const [detailTab, setDetailTab] = useState('overview');
   const [reviews, setReviews] = useState([]);
-  const [offerings, setOfferings] = useState([]);
+  const [shopProducts, setShopProducts] = useState([]);
+  const [providerServices, setProviderServices] = useState([]);
   const [documents, setDocuments] = useState([]);
-  const [loadingDetails, setLoadingDetails] = useState(false);
-  const [selectedDocument, setSelectedDocument] = useState(null);
-  const [showDocumentModal, setShowDocumentModal] = useState(false);
-
-  // Modal states
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [showVerifyModal, setShowVerifyModal] = useState(false);
-  const [formData, setFormData] = useState({});
+  const [catalog, setCatalog] = useState([]);
+  const [services, setServices] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [sort, setSort] = useState('newest');
+  const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState(null);
+  const [detailTab, setDetailTab] = useState('overview');
+  const [formOpen, setFormOpen] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
-  const [verificationNote, setVerificationNote] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [notice, setNotice] = useState(null);
 
-  // Fetch data when tab changes
-  useEffect(() => {
-    fetchData();
-  }, [tab]);
+  const pageSize = 10;
+  const tabConfig = TABS.find((entry) => entry.key === tab) || TABS[0];
+  const items = tab === 'providers' ? providers : tab === 'institutions' ? institutions : shops;
 
-  // Load details when a business is selected
-  useEffect(() => {
-    if (selectedItem) {
-      loadBusinessDetails(selectedItem);
-    }
-  }, [selectedItem]);
+  const flash = (tone, text) => setNotice({ tone, text });
+
+  const setItems = (updater) => {
+    if (tab === 'providers') setProviders(updater);
+    else if (tab === 'institutions') setInstitutions(updater);
+    else setShops(updater);
+  };
 
   const fetchData = async () => {
     setLoading(true);
-    
     try {
-      if (tab === 'individuals') {
-        const { data, error } = await supabase
-          .from('individual_providers')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (error) throw error;
-        if (data) setIndividuals(data);
-      } 
-      else if (tab === 'institutions') {
-        const { data, error } = await supabase
-          .from('institutions')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (error) throw error;
-        if (data) setInstitutions(data);
-      } 
-      else if (tab === 'shops') {
-        const { data, error } = await supabase
-          .from('shops')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (error) throw error;
-        if (data) setShops(data);
+      const results = await Promise.all([
+        db('individual_providers').select('*').order('created_at', { ascending: false }).limit(1500),
+        db('institutions').select('*').order('created_at', { ascending: false }).limit(1500),
+        db('shops').select('*').order('created_at', { ascending: false }).limit(1500),
+        db('reviews').select('*').order('created_at', { ascending: false }).limit(4000),
+        db('shop_products').select('*').limit(4000),
+        db('provider_services').select('*').limit(4000),
+        db('business_documents').select('*').order('uploaded_at', { ascending: false }).limit(3000),
+        db('catalog').select('id,name,category,images,price').limit(3000),
+        db('service_catalog').select('id,name,category,images,duration').limit(3000),
+        db('users').select('id,full_name,email,avatar_url').limit(3000),
+      ]);
+
+      const [
+        providerResult,
+        institutionResult,
+        shopResult,
+        reviewResult,
+        productResult,
+        serviceResult,
+        documentResult,
+        catalogResult,
+        catalogServiceResult,
+        userResult,
+      ] = results;
+
+      setProviders(providerResult.data || []);
+      setInstitutions(institutionResult.data || []);
+      setShops(shopResult.data || []);
+      setReviews(reviewResult.data || []);
+      setShopProducts(productResult.data || []);
+      setProviderServices(serviceResult.data || []);
+      setDocuments(documentResult.data || []);
+      setCatalog(catalogResult.data || []);
+      setServices(catalogServiceResult.data || []);
+      setUsers(userResult.data || []);
+
+      const errors = results.map((result) => result.error).filter(Boolean);
+      if (errors.length) {
+        flash('warning', `Some business data could not be loaded: ${errors[0].message}`);
       }
     } catch (error) {
-      console.error('Error fetching data:', error);
-    } finally {
-      setLoading(false);
+      flash('danger', error.message || 'Could not load businesses.');
     }
+    setLoading(false);
   };
 
-  const loadBusinessDetails = async (business) => {
-    setLoadingDetails(true);
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  useEffect(() => {
+    setSelected(null);
+    setPage(1);
+    setStatusFilter('all');
+  }, [tab]);
+
+  useEffect(() => {
     setDetailTab('overview');
-    
-    try {
-      // Load reviews
-      const { data: reviewsData } = await supabase
-        .from('reviews')
-        .select('*, customer:customer_id(full_name, phone_number)')
-        .eq('business_id', business.id)
-        .order('created_at', { ascending: false });
-      setReviews(reviewsData || []);
+  }, [selected?.id]);
 
-      // Load products/services based on type
-      if (tab === 'shops') {
-        // Load shop products
-        const { data: productsData } = await supabase
-          .from('shop_products')
-          .select('*, catalog:catalog_id(id, name, description, images, specifications, category, brand)')
-          .eq('shop_id', business.id);
-        setOfferings(productsData || []);
-      } else if (tab === 'individuals') {
-        // Load provider services
-        const { data: servicesData } = await supabase
-          .from('provider_services')
-          .select('*, service_catalog:service_id(id, name, description, images, duration, category, specifications)')
-          .eq('user_id', business.id);
-        setOfferings(servicesData || []);
+  const reviewsByBusiness = useMemo(() => {
+    const map = new Map();
+    reviews.forEach((review) => {
+      if (!review.business_id) return;
+      if (!map.has(review.business_id)) map.set(review.business_id, []);
+      map.get(review.business_id).push(review);
+    });
+    return map;
+  }, [reviews]);
+
+  const documentsByBusiness = useMemo(() => {
+    const map = new Map();
+    documents.forEach((document) => {
+      if (!document.business_id) return;
+      if (!map.has(document.business_id)) map.set(document.business_id, []);
+      map.get(document.business_id).push(document);
+    });
+    return map;
+  }, [documents]);
+
+  const userMap = useMemo(() => {
+    const map = new Map();
+    users.forEach((member) => map.set(member.id, member));
+    return map;
+  }, [users]);
+
+  const catalogMap = useMemo(() => {
+    const map = new Map();
+    catalog.forEach((item) => map.set(item.id, item));
+    return map;
+  }, [catalog]);
+
+  const serviceMap = useMemo(() => {
+    const map = new Map();
+    services.forEach((item) => map.set(item.id, item));
+    return map;
+  }, [services]);
+
+  const stats = useMemo(() => {
+    const all = [...providers, ...institutions, ...shops];
+    return {
+      providers: providers.length,
+      institutions: institutions.length,
+      shops: shops.length,
+      verified: all.filter((item) => item.is_verified).length,
+      active: all.filter((item) => isActive(item, tab)).length,
+      reviews: reviews.length,
+    };
+  }, [providers, institutions, shops, reviews, tab]);
+
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return items
+      .filter((item) => {
+        const haystack = [
+          nameOf(item, tab),
+          subtitleOf(item, tab),
+          item.phone,
+          item.email,
+          item.city,
+          item.area,
+          item.district,
+          item.address,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        const matchesSearch = !query || haystack.includes(query);
+        const status = statusOf(item, tab).label.toLowerCase();
+        const matchesStatus =
+          statusFilter === 'all' ||
+          (statusFilter === 'verified' && item.is_verified) ||
+          (statusFilter === 'pending' && !item.is_verified) ||
+          (statusFilter === 'active' && isActive(item, tab)) ||
+          (statusFilter === 'inactive' && !isActive(item, tab)) ||
+          statusFilter === status;
+        return matchesSearch && matchesStatus;
+      })
+      .sort((a, b) => {
+        if (sort === 'name') return nameOf(a, tab).localeCompare(nameOf(b, tab));
+        if (sort === 'rating') {
+          return ratingOf(b, reviewsByBusiness.get(b.id)) - ratingOf(a, reviewsByBusiness.get(a.id));
+        }
+        if (sort === 'reviews') {
+          return reviewCountOf(b, reviewsByBusiness.get(b.id)) - reviewCountOf(a, reviewsByBusiness.get(a.id));
+        }
+        return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+      });
+  }, [items, tab, search, statusFilter, sort, reviewsByBusiness]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const paged = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  const openEdit = (item) => {
+    setSelected(item);
+    setForm({
+      ...EMPTY_FORM,
+      ...item,
+      discount_percentage: item.discount_percentage ?? '',
+    });
+    setFormOpen(true);
+  };
+
+  const handleSave = async () => {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      let payload;
+      if (tab === 'providers') {
+        payload = {
+          full_name: form.full_name?.trim() || null,
+          display_name: form.display_name?.trim() || null,
+          profession: form.profession?.trim() || null,
+          specialty: form.specialty?.trim() || null,
+          phone: form.phone?.trim() || null,
+          email: form.email?.trim() || null,
+          city: form.city?.trim() || null,
+          address: form.address?.trim() || null,
+          bio: form.bio?.trim() || null,
+          website: form.website?.trim() || null,
+          is_verified: Boolean(form.is_verified),
+          is_active: Boolean(form.is_active),
+          is_available_for_hire: Boolean(form.is_available_for_hire),
+        };
       } else if (tab === 'institutions') {
-        // Load institution services
-        const { data: servicesData } = await supabase
-          .from('provider_services')
-          .select('*, service_catalog:service_id(id, name, description, images, duration, category, specifications)')
-          .eq('institution_id', business.id);
-        setOfferings(servicesData || []);
-      }
-
-      // Load documents
-      const { data: docsData } = await supabase
-        .from('business_documents')
-        .select('*')
-        .eq('business_id', business.id)
-        .order('uploaded_at', { ascending: false });
-      setDocuments(docsData || []);
-
-    } catch (error) {
-      console.error('Error loading business details:', error);
-    } finally {
-      setLoadingDetails(false);
-    }
-  };
-
-  // Get current data based on active tab
-  const getCurrentData = () => {
-    if (tab === 'individuals') return individuals;
-    if (tab === 'institutions') return institutions;
-    return shops;
-  };
-
-  // Stats for each type
-  const stats = {
-    individuals: individuals.length,
-    institutions: institutions.length,
-    shops: shops.length,
-  };
-
-  // Search and filter
-  const currentData = getCurrentData();
-  const filtered = currentData.filter(item => {
-    let name = '';
-    if (tab === 'individuals') name = item.full_name || item.display_name || '';
-    else if (tab === 'institutions') name = item.name || '';
-    else if (tab === 'shops') name = item.name || '';
-    return name.toLowerCase().includes(search.toLowerCase());
-  });
-
-  // Pagination
-  const totalPages = Math.ceil(filtered.length / pageSize);
-  const pagedData = filtered.slice((page - 1) * pageSize, page * pageSize);
-
-  // Tabs configuration
-  const tabs = [
-    { key: 'individuals', label: `Individual Providers (${stats.individuals})` },
-    { key: 'institutions', label: `Institutions (${stats.institutions})` },
-    { key: 'shops', label: `Shops (${stats.shops})` }
-  ];
-
-  // Get status badge for different types
-  const getStatusBadge = (item) => {
-    if (tab === 'individuals') {
-      if (!item.is_verified) return { bg: '#FFF3E0', color: '#FF9800', label: 'Pending' };
-      if (!item.is_active) return { bg: '#FFEBEE', color: '#F44336', label: 'Inactive' };
-      if (item.is_available_for_hire) return { bg: '#E8F5E9', color: '#4CAF50', label: 'Available' };
-      return { bg: '#E3F2FD', color: '#1976D2', label: 'Active' };
-    } else if (tab === 'institutions') {
-      if (!item.is_verified) return { bg: '#FFF3E0', color: '#FF9800', label: 'Pending' };
-      if (!item.is_open) return { bg: '#FFEBEE', color: '#F44336', label: 'Closed' };
-      return { bg: '#E8F5E9', color: '#4CAF50', label: 'Active' };
-    } else {
-      if (!item.is_verified) return { bg: '#FFF3E0', color: '#FF9800', label: 'Pending' };
-      if (!item.is_open) return { bg: '#FFEBEE', color: '#F44336', label: 'Closed' };
-      if (item.is_anchor_partner) return { bg: '#E8F5E9', color: '#4CAF50', label: 'Partner' };
-      return { bg: '#E8F5E9', color: '#4CAF50', label: 'Active' };
-    }
-  };
-
-  // --- CRUD Operations ---
-  const handleOpenEdit = (item) => {
-    setSelectedItem(item);
-    setFormData({ ...item });
-    setShowEditModal(true);
-  };
-
-  const handleSaveEdit = async () => {
-    if (!selectedItem) return;
-    setSaving(true);
-    
-    try {
-      let table = '';
-      if (tab === 'individuals') table = 'individual_providers';
-      else if (tab === 'institutions') table = 'institutions';
-      else table = 'shops';
-
-      const { error } = await supabase
-        .from(table)
-        .update(formData)
-        .eq('id', selectedItem.id);
-
-      if (error) throw error;
-
-      // Update local state
-      const updateData = (data) => data.map(item => 
-        item.id === selectedItem.id ? { ...item, ...formData } : item
-      );
-      
-      if (tab === 'individuals') setIndividuals(updateData);
-      else if (tab === 'institutions') setInstitutions(updateData);
-      else setShops(updateData);
-      
-      setSelectedItem({ ...selectedItem, ...formData });
-      setShowEditModal(false);
-    } catch (error) {
-      alert('Error: ' + error.message);
-    }
-    setSaving(false);
-  };
-
-  const handleVerify = async () => {
-    if (!selectedItem) return;
-    setSaving(true);
-    
-    try {
-      let table = '';
-      if (tab === 'individuals') table = 'individual_providers';
-      else if (tab === 'institutions') table = 'institutions';
-      else table = 'shops';
-
-      const newStatus = !selectedItem.is_verified;
-      const { error } = await supabase
-        .from(table)
-        .update({ is_verified: newStatus })
-        .eq('id', selectedItem.id);
-
-      if (error) throw error;
-
-      // Update local state
-      const updateData = (data) => data.map(item => 
-        item.id === selectedItem.id ? { ...item, is_verified: newStatus } : item
-      );
-      
-      if (tab === 'individuals') setIndividuals(updateData);
-      else if (tab === 'institutions') setInstitutions(updateData);
-      else setShops(updateData);
-      
-      setSelectedItem({ ...selectedItem, is_verified: newStatus });
-      setShowVerifyModal(false);
-      setVerificationNote('');
-    } catch (error) {
-      alert('Error: ' + error.message);
-    }
-    setSaving(false);
-  };
-
-  const handleSuspend = async () => {
-    if (!selectedItem) return;
-    setSaving(true);
-    
-    try {
-      let table = '';
-      let activeField = 'is_active';
-      
-      if (tab === 'individuals') {
-        table = 'individual_providers';
-        activeField = 'is_active';
-      } else if (tab === 'institutions') {
-        table = 'institutions';
-        activeField = 'is_open';
+        payload = {
+          name: form.name?.trim() || null,
+          type: form.type?.trim() || null,
+          phone: form.phone?.trim() || null,
+          email: form.email?.trim() || null,
+          website: form.website?.trim() || null,
+          city: form.city?.trim() || null,
+          area: form.area?.trim() || null,
+          address: form.address?.trim() || null,
+          description: form.description?.trim() || null,
+          is_open: Boolean(form.is_open),
+          is_verified: Boolean(form.is_verified),
+        };
       } else {
-        table = 'shops';
-        activeField = 'is_open';
+        payload = {
+          name: form.name?.trim() || null,
+          category: form.category?.trim() || null,
+          phone: form.phone?.trim() || null,
+          city: form.city?.trim() || null,
+          district: form.district?.trim() || null,
+          address: form.address?.trim() || null,
+          description: form.description?.trim() || null,
+          discount_percentage:
+            form.discount_percentage === '' || form.discount_percentage === null
+              ? null
+              : Number(form.discount_percentage),
+          is_open: Boolean(form.is_open),
+          is_active: Boolean(form.is_open),
+          is_verified: Boolean(form.is_verified),
+          is_anchor_partner: Boolean(form.is_anchor_partner),
+        };
       }
 
-      const newStatus = !selectedItem[activeField];
-      const { error } = await supabase
-        .from(table)
-        .update({ [activeField]: newStatus })
-        .eq('id', selectedItem.id);
-
-      if (error) throw error;
-
-      // Update local state
-      const updateData = (data) => data.map(item => 
-        item.id === selectedItem.id ? { ...item, [activeField]: newStatus } : item
-      );
-      
-      if (tab === 'individuals') setIndividuals(updateData);
-      else if (tab === 'institutions') setInstitutions(updateData);
-      else setShops(updateData);
-      
-      setSelectedItem({ ...selectedItem, [activeField]: newStatus });
+      const { data, error } = await db(tabConfig.table)
+        .update(payload)
+        .eq('id', selected.id)
+        .select('*')
+        .maybeSingle();
+      if (error) throw new Error(error.message);
+      const updated = data || { ...selected, ...payload };
+      setItems((current) => current.map((item) => (item.id === selected.id ? updated : item)));
+      setSelected(updated);
+      setFormOpen(false);
+      flash('success', `${nameOf(updated, tab)} updated.`);
     } catch (error) {
-      alert('Error: ' + error.message);
+      flash('danger', error.message || 'Could not save this business.');
     }
     setSaving(false);
+  };
+
+  const patchBusiness = async (item, payload, successText) => {
+    const { data, error } = await db(tabConfig.table)
+      .update(payload)
+      .eq('id', item.id)
+      .select('*')
+      .maybeSingle();
+    if (error) {
+      flash('danger', error.message);
+    } else {
+      const updated = data || { ...item, ...payload };
+      setItems((current) => current.map((row) => (row.id === item.id ? updated : row)));
+      setSelected((current) => (current?.id === item.id ? updated : current));
+      flash('success', successText || `${nameOf(updated, tab)} updated.`);
+    }
+  };
+
+  const toggleVerified = (item) =>
+    patchBusiness(
+      item,
+      { is_verified: !item.is_verified },
+      `${nameOf(item, tab)} is now ${item.is_verified ? 'pending' : 'verified'}.`
+    );
+
+  const toggleActive = (item) => {
+    const next = !isActive(item, tab);
+    const payload =
+      tab === 'providers'
+        ? { is_active: next }
+        : tab === 'institutions'
+          ? { is_open: next }
+          : { is_open: next, is_active: next };
+    return patchBusiness(
+      item,
+      payload,
+      `${nameOf(item, tab)} is now ${next ? 'active' : 'suspended'}.`
+    );
   };
 
   const handleDelete = async () => {
-    if (!selectedItem) return;
-    setSaving(true);
-    
-    try {
-      let table = '';
-      if (tab === 'individuals') table = 'individual_providers';
-      else if (tab === 'institutions') table = 'institutions';
-      else table = 'shops';
-
-      const { error } = await supabase
-        .from(table)
-        .delete()
-        .eq('id', selectedItem.id);
-
-      if (error) throw error;
-
-      // Update local state
-      if (tab === 'individuals') setIndividuals(prev => prev.filter(i => i.id !== selectedItem.id));
-      else if (tab === 'institutions') setInstitutions(prev => prev.filter(i => i.id !== selectedItem.id));
-      else setShops(prev => prev.filter(i => i.id !== selectedItem.id));
-      
-      setSelectedItem(null);
-      setShowDeleteConfirm(false);
-    } catch (error) {
-      alert('Error: ' + error.message);
+    if (!deleteTarget) return;
+    setDeleting(true);
+    const { error } = await db(tabConfig.table).delete().eq('id', deleteTarget.id);
+    if (error) {
+      flash('danger', error.message);
+    } else {
+      setItems((current) => current.filter((item) => item.id !== deleteTarget.id));
+      if (selected?.id === deleteTarget.id) setSelected(null);
+      flash('success', `${nameOf(deleteTarget, tab)} deleted.`);
+      setDeleteTarget(null);
     }
-    setSaving(false);
+    setDeleting(false);
   };
 
-  // Format date helper
-  const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { 
-    year: 'numeric', 
-    month: 'short', 
-    day: 'numeric' 
-  }) : '—';
-
-  // Format currency
-  const formatCurrency = (amount) => {
-    return `UGX ${Number(amount || 0).toLocaleString()}`;
-  };
-
-  // Render table row based on tab
-  const renderTableRow = (item) => {
-    if (tab === 'individuals') {
-      return (
-        <tr
-          key={item.id}
-          onClick={() => setSelectedItem(selectedItem?.id === item.id ? null : item)}
-          style={{
-            borderBottom: '1px solid #F5F6FA',
-            cursor: 'pointer',
-            background: selectedItem?.id === item.id ? '#F8FAFF' : '#FFFFFF',
-            transition: 'background 0.2s',
-          }}
-        >
-          <td style={td}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{
-                width: 40,
-                height: 40,
-                borderRadius: 10,
-                overflow: 'hidden',
-                background: '#E8F0FE',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 16,
-                fontWeight: 700,
-                color: '#4A7DFF'
-              }}>
-                {item.profile_image ? (
-                  <img 
-                    src={item.profile_image} 
-                    alt={item.full_name} 
-                    style={{ width: 40, height: 40, objectFit: 'cover' }}
-                  />
-                ) : (
-                  item.full_name?.[0] || 'I'
-                )}
-              </div>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>{item.full_name}</div>
-                <div style={{ fontSize: 10, color: '#8E99B3' }}>
-                  {item.display_name || item.profession || 'Individual Provider'}
-                </div>
-              </div>
-            </div>
-          </td>
-          <td style={td}>
-            <span style={{
-              padding: '4px 10px',
-              borderRadius: 12,
-              fontSize: 11,
-              fontWeight: 600,
-              background: '#F3E5F5',
-              color: '#7B1FA2'
-            }}>
-              {item.specialty || 'General'}
-            </span>
-          </td>
-          <td style={td}>{item.city || '—'}</td>
-          <td style={td}>
-            <span style={{ fontWeight: 700, color: '#FF9800' }}>
-              ⭐ {Number(item.rating || 0).toFixed(1)}
-            </span>
-            <span style={{ fontSize: 10, color: '#8E99B3', marginLeft: 4 }}>
-              ({item.review_count || 0})
-            </span>
-          </td>
-          <td style={td}>
-            <span style={item.is_verified ? verifiedBadge : pendingBadge}>
-              {item.is_verified ? '✅ Verified' : '⏳ Pending'}
-            </span>
-          </td>
-          <td style={td}>{formatDate(item.created_at)}</td>
-        </tr>
-      );
-    } 
-    else if (tab === 'institutions') {
-      return (
-        <tr
-          key={item.id}
-          onClick={() => setSelectedItem(selectedItem?.id === item.id ? null : item)}
-          style={{
-            borderBottom: '1px solid #F5F6FA',
-            cursor: 'pointer',
-            background: selectedItem?.id === item.id ? '#F8FAFF' : '#FFFFFF',
-            transition: 'background 0.2s',
-          }}
-        >
-          <td style={td}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{
-                width: 40,
-                height: 40,
-                borderRadius: 10,
-                overflow: 'hidden',
-                background: '#E3F2FD',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 16,
-                fontWeight: 700,
-                color: '#1976D2'
-              }}>
-                {item.logo ? (
-                  <img 
-                    src={item.logo} 
-                    alt={item.name} 
-                    style={{ width: 40, height: 40, objectFit: 'cover' }}
-                  />
-                ) : (
-                  item.name?.[0] || 'C'
-                )}
-              </div>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>{item.name}</div>
-                <div style={{ fontSize: 10, color: '#8E99B3' }}>
-                  {item.type || 'Institution'} • {item.city || 'No city'}
-                </div>
-              </div>
-            </div>
-          </td>
-          <td style={td}>
-            <span style={item.is_verified ? verifiedBadge : pendingBadge}>
-              {item.is_verified ? 'Verified' : 'Pending'}
-            </span>
-          </td>
-          <td style={td}>{item.city || item.area || '—'}</td>
-          <td style={td}>⭐ {Number(item.rating || 0).toFixed(1)}</td>
-          <td style={td}>{formatDate(item.created_at)}</td>
-        </tr>
-      );
-    } 
-    else if (tab === 'shops') {
-      const status = getStatusBadge(item);
-      return (
-        <tr
-          key={item.id}
-          onClick={() => setSelectedItem(selectedItem?.id === item.id ? null : item)}
-          style={{
-            borderBottom: '1px solid #F5F6FA',
-            cursor: 'pointer',
-            background: selectedItem?.id === item.id ? '#F8FAFF' : '#FFFFFF',
-            transition: 'background 0.2s',
-          }}
-        >
-          <td style={td}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{
-                width: 40,
-                height: 40,
-                borderRadius: 10,
-                background: '#E8F5E9',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 700,
-                fontSize: 16,
-                color: '#4CAF50'
-              }}>
-                {item.name?.[0] || 'S'}
-              </div>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>{item.name}</div>
-                <div style={{ fontSize: 10, color: '#8E99B3' }}>{item.address || 'Jinja City'}</div>
-              </div>
-            </div>
-          </td>
-          <td style={td}>{item.category || '—'}</td>
-          <td style={td}>⭐ {Number(item.rating || 0).toFixed(1)}</td>
-          <td style={td}>
-            <span style={item.is_verified ? verifiedBadge : pendingBadge}>
-              {item.is_verified ? 'Verified' : 'Pending'}
-            </span>
-          </td>
-          <td style={td}>{formatDate(item.created_at)}</td>
-        </tr>
-      );
+  const toggleDocument = async (document) => {
+    const next = !document.is_verified;
+    const { error } = await db('business_documents')
+      .update({
+        is_verified: next,
+        status: next ? 'verified' : 'pending',
+        verified_at: next ? new Date().toISOString() : null,
+      })
+      .eq('id', document.id);
+    if (error) {
+      flash('danger', error.message);
+      return;
     }
-  };
-
-  // Render Detail Panel
-  const renderDetailPanel = () => {
-    if (!selectedItem) return null;
-
-    const businessName = selectedItem.full_name || selectedItem.name || 'Business';
-    const isIndividual = tab === 'individuals';
-    const isInstitution = tab === 'institutions';
-    const isShop = tab === 'shops';
-
-    return (
-      <div style={panelStyles}>
-        {/* Header */}
-        <div style={panelHeader}>
-          <div>
-            <h3 style={panelTitle}>{businessName}</h3>
-            <div style={{ fontSize: 11, color: '#8E99B3', marginTop: 2 }}>
-              {isIndividual ? 'Individual Provider' : isInstitution ? 'Institution' : 'Shop'} • 
-              ID: {selectedItem.id?.slice(0, 8)}...
-            </div>
-          </div>
-          <button onClick={() => setSelectedItem(null)} style={closeBtn}>✕</button>
-        </div>
-
-        {/* Status Badges */}
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
-          <span style={{ 
-            padding: '4px 12px', 
-            borderRadius: 12, 
-            fontSize: 11, 
-            fontWeight: 700,
-            background: selectedItem.is_verified ? '#E8F5E9' : '#FFF3E0',
-            color: selectedItem.is_verified ? '#2E7D32' : '#E65100'
-          }}>
-            {selectedItem.is_verified ? '✅ Verified' : '⏳ Pending'}
-          </span>
-          <span style={{ 
-            padding: '4px 12px', 
-            borderRadius: 12, 
-            fontSize: 11, 
-            fontWeight: 700,
-            background: (selectedItem.is_active || selectedItem.is_open) ? '#E8F5E9' : '#FFEBEE',
-            color: (selectedItem.is_active || selectedItem.is_open) ? '#2E7D32' : '#C62828'
-          }}>
-            {(selectedItem.is_active || selectedItem.is_open) ? '🟢 Active' : '🔴 Inactive'}
-          </span>
-          {selectedItem.is_anchor_partner && (
-            <span style={{ 
-              padding: '4px 12px', 
-              borderRadius: 12, 
-              fontSize: 11, 
-              fontWeight: 700,
-              background: '#FFF8E1',
-              color: '#F57F17'
-            }}>
-              ⭐ Partner
-            </span>
-          )}
-        </div>
-
-        {/* Detail Tabs */}
-        <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
-          {['overview', 'products', 'reviews', 'documents'].map(t => (
-            <button 
-              key={t} 
-              onClick={() => setDetailTab(t)} 
-              style={{ 
-                ...tabBtn, 
-                background: detailTab === t ? '#4A7DFF' : '#F5F6FA', 
-                color: detailTab === t ? '#FFFFFF' : '#8E99B3' 
-              }}
-            >
-              {t === 'overview' ? '📋 Overview' : 
-               t === 'products' ? (isShop ? '📦 Products' : '🛠️ Services') :
-               t === 'reviews' ? '⭐ Reviews' : '📄 Documents'}
-            </button>
-          ))}
-        </div>
-
-        {/* Tab Content */}
-        {detailTab === 'overview' && renderOverview()}
-        {detailTab === 'products' && renderOfferings()}
-        {detailTab === 'reviews' && renderReviews()}
-        {detailTab === 'documents' && renderDocuments()}
-
-        {/* Action Buttons */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16, paddingTop: 16, borderTop: '1px solid #EEF3FF' }}>
-          <button onClick={() => handleOpenEdit(selectedItem)} style={actionBtnPrimary}>✏️ Edit</button>
-          <button onClick={() => setShowVerifyModal(true)} style={actionBtnSecondary}>
-            {selectedItem.is_verified ? '⏳ Unverify' : '✅ Verify'}
-          </button>
-          <button onClick={handleSuspend} style={actionBtnDanger}>
-            {(selectedItem.is_active || selectedItem.is_open) ? '🚫 Suspend' : '▶️ Activate'}
-          </button>
-          <button onClick={() => setShowDeleteConfirm(true)} style={{ ...actionBtnDanger, background: '#FFEBEE', color: '#C62828' }}>
-            🗑️ Delete
-          </button>
-        </div>
-      </div>
+    setDocuments((current) =>
+      current.map((entry) =>
+        entry.id === document.id
+          ? { ...entry, is_verified: next, status: next ? 'verified' : 'pending' }
+          : entry
+      )
     );
+    flash('success', `Document ${next ? 'verified' : 'marked pending'}.`);
   };
 
-  // Render Overview Tab
-  const renderOverview = () => {
-    const item = selectedItem;
-    if (!item) return null;
-
-    return (
-      <div>
-        {loadingDetails ? (
-          <div style={{ textAlign: 'center', padding: 20, color: '#8E99B3' }}>Loading details...</div>
-        ) : (
-          <>
-            {/* Basic Info */}
-            <div style={detailRow}><span style={detailLabel}>Name</span><span style={detailValue}>{item.full_name || item.name || '—'}</span></div>
-            {item.display_name && (
-              <div style={detailRow}><span style={detailLabel}>Display Name</span><span style={detailValue}>{item.display_name}</span></div>
-            )}
-            {item.profession && (
-              <div style={detailRow}><span style={detailLabel}>Profession</span><span style={detailValue}>{item.profession}</span></div>
-            )}
-            {item.specialty && (
-              <div style={detailRow}><span style={detailLabel}>Specialty</span><span style={detailValue}>{item.specialty}</span></div>
-            )}
-            {item.category && (
-              <div style={detailRow}><span style={detailLabel}>Category</span><span style={detailValue}>{item.category}</span></div>
-            )}
-            {item.type && (
-              <div style={detailRow}><span style={detailLabel}>Type</span><span style={detailValue}>{item.type}</span></div>
-            )}
-            {item.experience_years !== undefined && (
-              <div style={detailRow}><span style={detailLabel}>Experience</span><span style={detailValue}>{item.experience_years} years</span></div>
-            )}
-            {item.phone && (
-              <div style={detailRow}><span style={detailLabel}>Phone</span><span style={detailValue}>{item.phone}</span></div>
-            )}
-            {item.email && (
-              <div style={detailRow}><span style={detailLabel}>Email</span><span style={detailValue}>{item.email}</span></div>
-            )}
-            {item.address && (
-              <div style={detailRow}><span style={detailLabel}>Address</span><span style={detailValue}>{item.address}</span></div>
-            )}
-            {item.area && (
-              <div style={detailRow}><span style={detailLabel}>Area</span><span style={detailValue}>{item.area}</span></div>
-            )}
-            {item.city && (
-              <div style={detailRow}><span style={detailLabel}>City</span><span style={detailValue}>{item.city}</span></div>
-            )}
-            {item.website && (
-              <div style={detailRow}>
-                <span style={detailLabel}>Website</span>
-                <span style={detailValue}>
-                  <a href={item.website} target="_blank" rel="noopener noreferrer" style={{ color: '#4A7DFF', textDecoration: 'none' }}>
-                    🔗 Visit
-                  </a>
-                </span>
-              </div>
-            )}
-            
-            {/* Description/Bio */}
-            {(item.description || item.bio) && (
-              <div style={{ ...detailRow, flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
-                <span style={detailLabel}>Description</span>
-                <span style={{ fontSize: 12, color: '#1F2F5F', lineHeight: 1.5 }}>
-                  {item.description || item.bio}
-                </span>
-              </div>
-            )}
-
-            {/* Rating */}
-            <div style={detailRow}>
-              <span style={detailLabel}>Rating</span>
-              <span style={detailValue}>⭐ {Number(item.rating || 0).toFixed(1)} ({item.review_count || 0} reviews)</span>
-            </div>
-
-            {/* Wallet Balance (for shops) */}
-            {item.wallet_balance !== undefined && (
-              <div style={detailRow}>
-                <span style={detailLabel}>Wallet Balance</span>
-                <span style={detailValue}>{formatCurrency(item.wallet_balance)}</span>
-              </div>
-            )}
-
-            {/* Discount (for shops) */}
-            {item.discount_percentage !== undefined && (
-              <div style={detailRow}>
-                <span style={detailLabel}>Discount</span>
-                <span style={detailValue}>{item.discount_percentage || 0}%</span>
-              </div>
-            )}
-
-            {/* Qualifications & Certifications */}
-            {item.qualifications && item.qualifications.length > 0 && (
-              <div style={{ ...detailRow, flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
-                <span style={detailLabel}>Qualifications</span>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                  {item.qualifications.map((q, i) => (
-                    <span key={i} style={{ padding: '2px 8px', borderRadius: 10, fontSize: 10, background: '#E3F2FD', color: '#1565C0' }}>
-                      {q}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {item.certifications && item.certifications.length > 0 && (
-              <div style={{ ...detailRow, flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
-                <span style={detailLabel}>Certifications</span>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                  {item.certifications.map((c, i) => (
-                    <span key={i} style={{ padding: '2px 8px', borderRadius: 10, fontSize: 10, background: '#FFF3E0', color: '#E65100' }}>
-                      {c}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Tags */}
-            {item.tags && item.tags.length > 0 && (
-              <div style={{ ...detailRow, flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
-                <span style={detailLabel}>Tags</span>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                  {item.tags.map((tag, i) => (
-                    <span key={i} style={{ padding: '2px 8px', borderRadius: 10, fontSize: 10, background: '#F3E5F5', color: '#7B1FA2' }}>
-                      #{tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Joined Date */}
-            <div style={detailRow}>
-              <span style={detailLabel}>Joined</span>
-              <span style={detailValue}>{formatDate(item.created_at)}</span>
-            </div>
-          </>
-        )}
-      </div>
-    );
+  const exportCsv = () => {
+    const header = ['Name', 'Type', 'Location', 'Phone', 'Email', 'Rating', 'Reviews', 'Status', 'Created'];
+    const lines = filtered.map((item) => {
+      const reviewsForItem = reviewsByBusiness.get(item.id) || [];
+      const status = statusOf(item, tab);
+      return [
+        nameOf(item, tab),
+        subtitleOf(item, tab),
+        locationOf(item),
+        item.phone || '',
+        item.email || '',
+        ratingOf(item, reviewsForItem).toFixed(1),
+        reviewCountOf(item, reviewsForItem),
+        status.label,
+        item.created_at || '',
+      ]
+        .map((value) => `"${String(value).replace(/"/g, '""')}"`)
+        .join(',');
+    });
+    const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `munolink-${tab}-${new Date().toISOString().slice(0, 10)}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    flash('success', `${tabConfig.short} exported to CSV.`);
   };
 
-  // Render Offerings (Products/Services)
-  const renderOfferings = () => {
-    if (loadingDetails) {
-      return <div style={{ textAlign: 'center', padding: 20, color: '#8E99B3' }}>Loading...</div>;
-    }
-
-    if (offerings.length === 0) {
-      return (
-        <div style={{ textAlign: 'center', padding: 30, color: '#8E99B3' }}>
-          <div style={{ fontSize: 30, marginBottom: 8 }}>📭</div>
-          <div>No {tab === 'shops' ? 'products' : 'services'} available</div>
-        </div>
-      );
-    }
-
-    return (
-      <div>
-        {offerings.map((item, index) => {
-          const catalog = item.catalog || item.service_catalog || {};
-          return (
-            <div key={index} style={{ padding: '10px 0', borderBottom: '1px solid #F5F6FA' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 13, fontWeight: 600, color: '#1F2F5F' }}>
-                  {catalog.name || item.name || 'Unnamed'}
-                </span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: '#4A7DFF' }}>
-                  {formatCurrency(item.regular_price || item.price || 0)}
-                </span>
-              </div>
-              {catalog.category && (
-                <div style={{ fontSize: 11, color: '#8E99B3', marginTop: 2 }}>Category: {catalog.category}</div>
-              )}
-              {catalog.duration && (
-                <div style={{ fontSize: 11, color: '#8E99B3', marginTop: 2 }}>⏱️ {catalog.duration}</div>
-              )}
-              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                {tab === 'shops' ? (
-                  <span style={{ 
-                    padding: '2px 8px', 
-                    borderRadius: 10, 
-                    fontSize: 9, 
-                    fontWeight: 600,
-                    background: item.in_stock ? '#E8F5E9' : '#FFEBEE',
-                    color: item.in_stock ? '#2E7D32' : '#C62828'
-                  }}>
-                    {item.in_stock ? 'In Stock' : 'Out of Stock'}
-                  </span>
-                ) : (
-                  <span style={{ 
-                    padding: '2px 8px', 
-                    borderRadius: 10, 
-                    fontSize: 9, 
-                    fontWeight: 600,
-                    background: item.is_active ? '#E8F5E9' : '#FFEBEE',
-                    color: item.is_active ? '#2E7D32' : '#C62828'
-                  }}>
-                    {item.is_active ? 'Active' : 'Inactive'}
-                  </span>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
-  // Render Reviews
-  const renderReviews = () => {
-    if (loadingDetails) {
-      return <div style={{ textAlign: 'center', padding: 20, color: '#8E99B3' }}>Loading...</div>;
-    }
-
-    if (reviews.length === 0) {
-      return (
-        <div style={{ textAlign: 'center', padding: 30, color: '#8E99B3' }}>
-          <div style={{ fontSize: 30, marginBottom: 8 }}>⭐</div>
-          <div>No reviews yet</div>
-        </div>
-      );
-    }
-
-    return (
-      <div>
-        {reviews.map((review, index) => (
-          <div key={index} style={{ padding: '10px 0', borderBottom: '1px solid #F5F6FA' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <span style={{ fontSize: 13, fontWeight: 600, color: '#1F2F5F' }}>
-                  {review.customer?.full_name || 'Anonymous'}
-                </span>
-                <span style={{ fontSize: 11, color: '#8E99B3', marginLeft: 8 }}>
-                  ⭐ {review.rating}/5
-                </span>
-              </div>
-              <span style={{ fontSize: 10, color: '#8E99B3' }}>{formatDate(review.created_at)}</span>
-            </div>
-            {review.title && (
-              <div style={{ fontSize: 12, fontWeight: 500, color: '#1F2F5F', marginTop: 4 }}>
-                {review.title}
-              </div>
-            )}
-            {review.comment && (
-              <div style={{ fontSize: 11, color: '#8E99B3', marginTop: 2, lineHeight: 1.4 }}>
-                {review.comment}
-              </div>
-            )}
-            <div style={{ marginTop: 4 }}>
-              <span style={{ 
-                padding: '2px 8px', 
-                borderRadius: 10, 
-                fontSize: 9, 
-                fontWeight: 600,
-                background: review.status === 'published' ? '#E8F5E9' : review.status === 'pending' ? '#FFF3E0' : '#FFEBEE',
-                color: review.status === 'published' ? '#2E7D32' : review.status === 'pending' ? '#E65100' : '#C62828'
-              }}>
-                {review.status || 'pending'}
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
-    );
-  };
-
-  // Render Documents
-  const renderDocuments = () => {
-    if (loadingDetails) {
-      return <div style={{ textAlign: 'center', padding: 20, color: '#8E99B3' }}>Loading...</div>;
-    }
-
-    if (documents.length === 0) {
-      return (
-        <div style={{ textAlign: 'center', padding: 30, color: '#8E99B3' }}>
-          <div style={{ fontSize: 30, marginBottom: 8 }}>📄</div>
-          <div>No documents uploaded</div>
-        </div>
-      );
-    }
-
-    const openDocument = (doc) => {
-      setSelectedDocument(doc);
-      setShowDocumentModal(true);
-    };
-
-    return (
-      <div>
-        {documents.map((doc, index) => (
-          <div 
-            key={index} 
-            style={{ 
-              padding: '10px 0', 
-              borderBottom: '1px solid #F5F6FA',
-              cursor: 'pointer',
-              transition: 'background 0.2s'
-            }}
-            onClick={() => openDocument(doc)}
-            onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFF'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 16 }}>📄</span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#4A7DFF' }}>
-                    {doc.file_name}
-                  </span>
-                </div>
-                <div style={{ fontSize: 11, color: '#8E99B3', marginTop: 2 }}>
-                  {doc.document_type?.replace('_', ' ').toUpperCase() || 'Document'}
-                  {doc.file_size && ` • ${(doc.file_size / 1024).toFixed(0)} KB`}
-                </div>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-                <span style={{ 
-                  padding: '2px 8px', 
-                  borderRadius: 10, 
-                  fontSize: 9, 
-                  fontWeight: 600,
-                  background: doc.is_verified ? '#E8F5E9' : doc.status === 'pending' ? '#FFF3E0' : '#FFEBEE',
-                  color: doc.is_verified ? '#2E7D32' : doc.status === 'pending' ? '#E65100' : '#C62828'
-                }}>
-                  {doc.is_verified ? '✅ Verified' : doc.status || 'Pending'}
-                </span>
-                <span style={{ fontSize: 9, color: '#8E99B3' }}>{formatDate(doc.uploaded_at)}</span>
-              </div>
-            </div>
-          </div>
-        ))}
-
-        {/* Document View Modal */}
-        {showDocumentModal && selectedDocument && (
-          <div style={modalOverlay} onClick={() => setShowDocumentModal(false)}>
-            <div style={{ ...modalContent, width: 600, maxWidth: '90vw' }} onClick={e => e.stopPropagation()}>
-              <div style={panelHeader}>
-                <h3 style={panelTitle}>📄 {selectedDocument.file_name}</h3>
-                <button onClick={() => setShowDocumentModal(false)} style={closeBtn}>✕</button>
-              </div>
-              <div style={{ marginBottom: 12 }}>
-                <div style={detailRow}><span style={detailLabel}>Type</span><span style={detailValue}>{selectedDocument.document_type?.replace('_', ' ').toUpperCase()}</span></div>
-                <div style={detailRow}><span style={detailLabel}>Uploaded</span><span style={detailValue}>{formatDate(selectedDocument.uploaded_at)}</span></div>
-                <div style={detailRow}><span style={detailLabel}>Status</span>
-                  <span style={{ 
-                    padding: '4px 10px', 
-                    borderRadius: 12, 
-                    fontSize: 11, 
-                    fontWeight: 700,
-                    background: selectedDocument.is_verified ? '#E8F5E9' : '#FFF3E0',
-                    color: selectedDocument.is_verified ? '#2E7D32' : '#E65100'
-                  }}>
-                    {selectedDocument.is_verified ? '✅ Verified' : selectedDocument.status || 'Pending'}
-                  </span>
-                </div>
-                {selectedDocument.rejection_reason && (
-                  <div style={{ ...detailRow, flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
-                    <span style={detailLabel}>Rejection Reason</span>
-                    <span style={{ fontSize: 12, color: '#C62828' }}>{selectedDocument.rejection_reason}</span>
-                  </div>
-                )}
-                {selectedDocument.file_url && (
-                  <div style={{ marginTop: 16, textAlign: 'center' }}>
-                    <a 
-                      href={selectedDocument.file_url} 
-                      target="_blank" 
-                      rel="noopener noreferrer" 
-                      style={{ 
-                        display: 'inline-block',
-                        padding: '10px 24px',
-                        background: '#4A7DFF',
-                        color: '#FFFFFF',
-                        borderRadius: 8,
-                        textDecoration: 'none',
-                        fontWeight: 600
-                      }}
-                    >
-                      📥 Open Document
-                    </a>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  };
+  const selectedReviews = selected ? reviewsByBusiness.get(selected.id) || [] : [];
+  const selectedDocuments = selected ? documentsByBusiness.get(selected.id) || [] : [];
+  const selectedOfferings = selected
+    ? tab === 'shops'
+      ? shopProducts.filter((product) => product.shop_id === selected.id)
+      : tab === 'providers'
+        ? providerServices.filter((service) => service.user_id === selected.id)
+        : providerServices.filter((service) => service.institution_id === selected.id)
+    : [];
 
   return (
-    <div style={{ padding: '30px 32px', display: 'flex', gap: 20 }}>
-      {/* Main Content */}
-      <div style={{ flex: 1 }}>
-        {/* Header */}
-        <div style={headerStyles}>
-          <div>
-            <div style={{ fontSize: 12, color: '#8E99B3', marginBottom: 4 }}>Dashboard &gt; Businesses</div>
-            <h1 style={{ fontSize: 26, fontWeight: 800, color: '#1F2F5F', margin: 0 }}>Businesses</h1>
-            <p style={{ color: '#8E99B3', fontSize: 14, marginTop: 4 }}>Manage all businesses, providers, institutions, and shops on the platform.</p>
-          </div>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <input 
-              placeholder={`Search ${tab === 'individuals' ? 'providers' : tab === 'institutions' ? 'institutions' : 'shops'}...`} 
-              value={search} 
-              onChange={(e) => { setSearch(e.target.value); setPage(1); }} 
-              style={searchInput} 
-            />
-            <button style={exportBtn}>📥 Export</button>
-            <button style={addBtn}>
-              + Add {tab === 'individuals' ? 'Provider' : tab === 'institutions' ? 'Institution' : 'Shop'}
+    <div style={{ padding: '30px 32px' }}>
+      <PageHeader
+        eyebrow="Community / Businesses"
+        title="Businesses"
+        subtitle="Manage providers, institutions and shops with verification, visibility and offering controls."
+        actions={
+          <>
+            <button type="button" onClick={exportCsv} style={ghostButton}>
+              <FiDownload size={14} /> Export CSV
             </button>
-          </div>
-        </div>
+            <button type="button" onClick={fetchData} style={ghostButton} disabled={loading}>
+              <FiRefreshCw size={14} /> Refresh
+            </button>
+          </>
+        }
+      />
 
-        {/* Tabs */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 20, alignItems: 'center', flexWrap: 'wrap' }}>
-          {tabs.map(t => (
+      {notice ? (
+        <div style={{ marginBottom: 14 }}>
+          <Notice tone={notice.tone}>{notice.text}</Notice>
+        </div>
+      ) : null}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(165px, 1fr))', gap: 12, marginBottom: 18 }}>
+        <StatCard icon={FiUser} label="Providers" value={formatNumber(stats.providers)} detail="Individual service pros" tone="primary" />
+        <StatCard icon={FiBriefcase} label="Institutions" value={formatNumber(stats.institutions)} detail="Organizations and clinics" tone="purple" />
+        <StatCard icon={FiShoppingBag} label="Shops" value={formatNumber(stats.shops)} detail="Storefronts and pharmacies" tone="teal" />
+        <StatCard icon={FiShield} label="Verified" value={formatNumber(stats.verified)} detail="Trusted business profiles" tone="success" />
+        <StatCard icon={FiActivity} label="Reviews" value={formatNumber(stats.reviews)} detail={`${formatNumber(stats.active)} active businesses`} tone="warning" />
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        {TABS.map((entry) => {
+          const Icon = entry.icon;
+          const count = entry.key === 'providers' ? providers.length : entry.key === 'institutions' ? institutions.length : shops.length;
+          const active = tab === entry.key;
+          return (
             <button
-              key={t.key}
-              onClick={() => {
-                setTab(t.key);
-                setSelectedItem(null);
-                setSearch('');
-                setPage(1);
-              }}
+              key={entry.key}
+              type="button"
+              onClick={() => setTab(entry.key)}
               style={{
-                padding: '8px 16px',
-                borderRadius: 8,
-                border: tab === t.key ? 'none' : '1px solid #DCE5FF',
-                fontSize: 13,
-                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 7,
+                padding: '9px 15px',
+                borderRadius: radii.md,
+                border: `1px solid ${active ? colors.primaryBorder : colors.border}`,
+                background: active ? colors.primarySoft : colors.surface,
+                color: active ? colors.primary : colors.textMuted,
+                fontSize: 12,
+                fontWeight: 700,
                 cursor: 'pointer',
-                background: tab === t.key ? '#4A7DFF' : '#FFFFFF',
-                color: tab === t.key ? '#FFFFFF' : '#1F2F5F',
-                transition: 'all 0.2s'
               }}
             >
-              {t.label}
+              <Icon size={14} /> {entry.label} ({count})
             </button>
-          ))}
-          <span style={{ fontSize: 12, color: '#8E99B3', marginLeft: 'auto' }}>
-            {filtered.length} {tab === 'individuals' ? 'providers' : tab === 'institutions' ? 'institutions' : 'shops'} found
-          </span>
+          );
+        })}
+        <span style={{ ...badgeStyle('neutral'), marginLeft: 'auto', alignSelf: 'center' }}>
+          {dataSourceLabel}
+        </span>
+      </div>
+
+      <Toolbar>
+        <SearchInput
+          value={search}
+          onChange={(value) => {
+            setSearch(value);
+            setPage(1);
+          }}
+          placeholder="Search name, contact, city…"
+          style={{ flex: 1, minWidth: 240 }}
+        />
+        <select
+          value={statusFilter}
+          onChange={(event) => {
+            setStatusFilter(event.target.value);
+            setPage(1);
+          }}
+          style={selectStyle}
+        >
+          <option value="all">All status</option>
+          <option value="verified">Verified</option>
+          <option value="pending">Pending</option>
+          <option value="active">Active</option>
+          <option value="inactive">Suspended</option>
+        </select>
+        <select value={sort} onChange={(event) => setSort(event.target.value)} style={selectStyle}>
+          <option value="newest">Newest first</option>
+          <option value="name">Name A–Z</option>
+          <option value="rating">Highest rated</option>
+          <option value="reviews">Most reviewed</option>
+        </select>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: colors.textMuted }}>
+          {formatNumber(filtered.length)} businesses
+        </span>
+      </Toolbar>
+
+      {loading ? (
+        <div style={{ ...cardStyle, padding: 40, textAlign: 'center', color: colors.textMuted, fontSize: 12 }}>
+          Loading businesses…
         </div>
+      ) : paged.length === 0 ? (
+        <div style={cardStyle}>
+          <EmptyState
+            icon={tabConfig.icon}
+            title={`No ${tabConfig.short.toLowerCase()} match your filters`}
+            description="Try a different search or status filter."
+          />
+        </div>
+      ) : (
+        <TableShell>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <Th>Business</Th>
+                <Th>Location</Th>
+                <Th>Rating</Th>
+                {tab === 'shops' ? <Th>Wallet</Th> : null}
+                <Th>Status</Th>
+                <Th>Created</Th>
+                <Th style={{ textAlign: 'right' }}>Actions</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {paged.map((item) => {
+                const reviewsForItem = reviewsByBusiness.get(item.id) || [];
+                const status = statusOf(item, tab);
+                const image = imageOf(item, tab);
+                const rating = ratingOf(item, reviewsForItem);
+                const reviewCount = reviewCountOf(item, reviewsForItem);
+                return (
+                  <tr key={item.id} onClick={() => setSelected(item)} style={{ cursor: 'pointer' }} className="table-row">
+                    <Td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={thumbStyle}>
+                          {image ? (
+                            <img src={image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          ) : (
+                            initials(nameOf(item, tab))
+                          )}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}>
+                            {nameOf(item, tab)}
+                          </div>
+                          <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 2 }}>
+                            {subtitleOf(item, tab)}
+                          </div>
+                        </div>
+                      </div>
+                    </Td>
+                    <Td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10.5, color: colors.textMuted }}>
+                        <FiMapPin size={11} /> {locationOf(item)}
+                      </div>
+                    </Td>
+                    <Td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <FiStar size={11} color={colors.warning} />
+                        <span style={{ fontSize: 11, fontWeight: 700 }}>{rating.toFixed(1)}</span>
+                        <span style={{ fontSize: 9.5, color: colors.textDim }}>({formatNumber(reviewCount)})</span>
+                      </div>
+                    </Td>
+                    {tab === 'shops' ? (
+                      <Td>
+                        <span style={{ fontSize: 11, fontWeight: 700 }}>{formatMoney(item.wallet_balance)}</span>
+                      </Td>
+                    ) : null}
+                    <Td><span style={badgeStyle(status.tone)}>{status.label}</span></Td>
+                    <Td><span style={{ fontSize: 10.5, color: colors.textMuted }}>{timeAgo(item.created_at)}</span></Td>
+                    <Td style={{ textAlign: 'right' }}>
+                      <div style={{ display: 'inline-flex', gap: 5 }} onClick={(event) => event.stopPropagation()}>
+                        <IconButton title="View" onClick={() => setSelected(item)}><FiExternalLink size={13} /></IconButton>
+                        <IconButton title={item.is_verified ? 'Mark pending' : 'Verify'} onClick={() => toggleVerified(item)}>
+                          <FiCheckCircle size={13} />
+                        </IconButton>
+                        <IconButton title={isActive(item, tab) ? 'Suspend' : 'Activate'} onClick={() => toggleActive(item)}>
+                          <FiActivity size={13} />
+                        </IconButton>
+                        <IconButton title="Edit" onClick={() => openEdit(item)}><FiEdit2 size={13} /></IconButton>
+                        <IconButton title="Delete" tone="danger" onClick={() => setDeleteTarget(item)}><FiTrash2 size={13} /></IconButton>
+                      </div>
+                    </Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </TableShell>
+      )}
 
-        {/* Table */}
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: 40, color: '#888' }}>
-            <div style={{ fontSize: 20, marginBottom: 8 }}>⏳</div>
-            Loading {tab === 'individuals' ? 'providers' : tab === 'institutions' ? 'institutions' : 'shops'}...
+      {filtered.length > 0 ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 14 }}>
+          <span style={{ fontSize: 10.5, color: colors.textMuted }}>
+            Page {currentPage} of {totalPages} · {formatNumber(filtered.length)} businesses
+          </span>
+          <div style={{ display: 'flex', gap: 7 }}>
+            <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={currentPage <= 1} style={{ ...ghostButton, padding: '7px 12px', opacity: currentPage <= 1 ? 0.5 : 1 }}>
+              Previous
+            </button>
+            <button type="button" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={currentPage >= totalPages} style={{ ...ghostButton, padding: '7px 12px', opacity: currentPage >= totalPages ? 0.5 : 1 }}>
+              Next
+            </button>
           </div>
-        ) : filtered.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: 60, color: '#8E99B3', background: '#FFFFFF', borderRadius: 16, border: '1px solid #EEF3FF' }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>📭</div>
-            <div style={{ fontSize: 16, fontWeight: 600, color: '#1F2F5F' }}>No {tab === 'individuals' ? 'providers' : tab === 'institutions' ? 'institutions' : 'shops'} found</div>
-            <div style={{ fontSize: 13, marginTop: 4 }}>Try adjusting your search or filters</div>
-          </div>
-        ) : (
-          <div style={tableContainer}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: '#FAFBFF', borderBottom: '1px solid #EEF3FF' }}>
-                  {tab === 'individuals' && (
-                    <>
-                      <th style={th}>Provider</th>
-                      <th style={th}>Specialty</th>
-                      <th style={th}>City</th>
-                      <th style={th}>Rating</th>
-                      <th style={th}>Status</th>
-                      <th style={th}>Joined</th>
-                    </>
-                  )}
-                  {tab === 'institutions' && (
-                    <>
-                      <th style={th}>Institution</th>
-                      <th style={th}>Status</th>
-                      <th style={th}>City</th>
-                      <th style={th}>Rating</th>
-                      <th style={th}>Joined</th>
-                    </>
-                  )}
-                  {tab === 'shops' && (
-                    <>
-                      <th style={th}>Shop</th>
-                      <th style={th}>Category</th>
-                      <th style={th}>Rating</th>
-                      <th style={th}>Status</th>
-                      <th style={th}>Joined</th>
-                    </>
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {pagedData.map((item) => renderTableRow(item))}
-              </tbody>
-            </table>
+        </div>
+      ) : null}
 
-            {/* Pagination */}
-            <div style={paginationStyles}>
-              <span style={{ fontSize: 12, color: '#8E99B3' }}>
-                Showing {pagedData.length} of {filtered.length} {tab === 'individuals' ? 'providers' : tab === 'institutions' ? 'institutions' : 'shops'}
-              </span>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button 
-                  onClick={() => setPage(p => Math.max(1, p - 1))} 
-                  disabled={page === 1} 
-                  style={pageBtn}
-                >
-                  ← Prev
-                </button>
-                <span style={{ padding: '8px 14px', fontSize: 12, color: '#8E99B3' }}>
-                  Page {page} of {totalPages || 1}
+      {selected ? (
+        <Drawer
+          title={nameOf(selected, tab)}
+          subtitle={`${subtitleOf(selected, tab)} · ${locationOf(selected)}`}
+          onClose={() => setSelected(null)}
+          width={640}
+          footer={
+            <>
+              <button type="button" onClick={() => setDeleteTarget(selected)} style={dangerButton}>
+                <FiTrash2 size={14} /> Delete
+              </button>
+              <button type="button" onClick={() => openEdit(selected)} style={primaryButton}>
+                <FiEdit2 size={14} /> Edit business
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 16 }}>
+            <div style={{ ...thumbStyle, width: 68, height: 68, borderRadius: 16, fontSize: 20 }}>
+              {imageOf(selected, tab) ? (
+                <img src={imageOf(selected, tab)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              ) : (
+                initials(nameOf(selected, tab))
+              )}
+            </div>
+            <div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 7 }}>
+                <span style={badgeStyle(statusOf(selected, tab).tone)}>{statusOf(selected, tab).label}</span>
+                <span style={badgeStyle(selected.is_verified ? 'success' : 'warning')}>
+                  {selected.is_verified ? 'Verified' : 'Pending verification'}
                 </span>
-                <button 
-                  onClick={() => setPage(p => Math.min(totalPages, p + 1))} 
-                  disabled={page === totalPages || totalPages === 0} 
-                  style={pageBtn}
-                >
-                  Next →
-                </button>
+                {tab === 'shops' && selected.is_anchor_partner ? <span style={badgeStyle('primary')}>Anchor partner</span> : null}
+              </div>
+              <div style={{ fontSize: 10.5, color: colors.textMuted, lineHeight: 1.5 }}>
+                Created {timeAgo(selected.created_at)} · {reviewCountOf(selected, selectedReviews)} reviews
               </div>
             </div>
           </div>
-        )}
-      </div>
 
-      {/* Detail Panel */}
-      {selectedItem && renderDetailPanel()}
+          <div style={{ display: 'flex', gap: 5, marginBottom: 16, flexWrap: 'wrap' }}>
+            {[
+              { key: 'overview', label: 'Overview' },
+              { key: 'offerings', label: `Offerings (${selectedOfferings.length})` },
+              { key: 'reviews', label: `Reviews (${selectedReviews.length})` },
+              { key: 'documents', label: `Documents (${selectedDocuments.length})` },
+            ].map((entry) => (
+              <button
+                key={entry.key}
+                type="button"
+                onClick={() => setDetailTab(entry.key)}
+                style={{
+                  padding: '7px 12px',
+                  borderRadius: 9,
+                  border: `1px solid ${detailTab === entry.key ? colors.primaryBorder : colors.border}`,
+                  background: detailTab === entry.key ? colors.primarySoft : colors.transparent,
+                  color: detailTab === entry.key ? colors.primary : colors.textMuted,
+                  fontSize: 10.5,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {entry.label}
+              </button>
+            ))}
+          </div>
 
-      {/* Edit Modal */}
-      {showEditModal && selectedItem && (
-        <div style={modalOverlay} onClick={() => setShowEditModal(false)}>
-          <div style={modalContent} onClick={e => e.stopPropagation()}>
-            <h2 style={{ fontSize: 20, fontWeight: 800, color: '#1F2F5F', margin: '0 0 20px' }}>
-              Edit {tab === 'individuals' ? 'Provider' : tab === 'institutions' ? 'Institution' : 'Shop'}
-            </h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {Object.keys(formData).map(key => {
-                if (key === 'id' || key === 'created_at' || key === 'updated_at') return null;
-                if (typeof formData[key] === 'object') return null;
-                
-                let label = key.replace(/_/g, ' ').toUpperCase();
-                let type = 'text';
-                if (key === 'rating' || key === 'review_count' || key === 'discount_percentage' || key === 'wallet_balance') {
-                  type = 'number';
-                }
-                if (key === 'is_active' || key === 'is_open' || key === 'is_verified' || key === 'is_available_for_hire') return null;
-                
-                return (
-                  <div key={key}>
-                    <label style={flabel}>{label}</label>
-                    <input
-                      type={type}
-                      value={formData[key] || ''}
-                      onChange={(e) => setFormData({ ...formData, [key]: e.target.value })}
-                      style={finput}
-                    />
+          {detailTab === 'overview' ? (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 9, marginBottom: 16 }}>
+                <DetailTile icon={FiPhone} label="Phone" value={selected.phone || 'Not set'} />
+                <DetailTile icon={FiGlobe} label="Email" value={selected.email || 'Not set'} />
+                <DetailTile icon={FiMapPin} label="Location" value={locationOf(selected)} />
+                <DetailTile icon={FiStar} label="Rating" value={`${ratingOf(selected, selectedReviews).toFixed(1)} / 5`} />
+                {tab === 'shops' ? (
+                  <DetailTile icon={FiPackage} label="Wallet" value={formatMoney(selected.wallet_balance)} />
+                ) : (
+                  <DetailTile icon={FiUsers} label="Reviews" value={formatNumber(reviewCountOf(selected, selectedReviews))} />
+                )}
+                <DetailTile icon={FiClock} label="Joined" value={selected.created_at ? new Date(selected.created_at).toLocaleDateString() : '—'} />
+              </div>
+
+              <SectionTitle icon={FiFileText} title="About" />
+              <p style={{ margin: '0 0 16px', fontSize: 11.5, color: colors.textMuted, lineHeight: 1.65 }}>
+                {selected.bio || selected.description || 'No description has been added yet.'}
+              </p>
+
+              {selected.website ? (
+                <>
+                  <SectionTitle icon={FiGlobe} title="Website" />
+                  <a href={selected.website} target="_blank" rel="noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: colors.primary, marginBottom: 16 }}>
+                    {selected.website} <FiExternalLink size={11} />
+                  </a>
+                </>
+              ) : null}
+
+              <SectionTitle icon={FiShield} title="Controls" />
+              <div style={{ display: 'grid', gap: 8 }}>
+                <Toggle
+                  checked={Boolean(selected.is_verified)}
+                  onChange={() => toggleVerified(selected)}
+                  label="Verified business"
+                  description="Verified profiles carry a trust badge across Munolink."
+                />
+                <Toggle
+                  checked={isActive(selected, tab)}
+                  onChange={() => toggleActive(selected)}
+                  label="Active and visible"
+                  description="Suspended businesses stay in the admin console but are hidden from members."
+                />
+                {tab === 'providers' ? (
+                  <Toggle
+                    checked={Boolean(selected.is_available_for_hire)}
+                    onChange={() => patchBusiness(selected, { is_available_for_hire: !selected.is_available_for_hire })}
+                    label="Available for hire"
+                    description="Shows the provider as accepting new work."
+                  />
+                ) : null}
+                {tab === 'shops' ? (
+                  <Toggle
+                    checked={Boolean(selected.is_anchor_partner)}
+                    onChange={() => patchBusiness(selected, { is_anchor_partner: !selected.is_anchor_partner })}
+                    label="Anchor partner"
+                    description="Highlights this shop as a strategic Munolink partner."
+                  />
+                ) : null}
+              </div>
+            </>
+          ) : null}
+
+          {detailTab === 'offerings' ? (
+            selectedOfferings.length ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {selectedOfferings.map((offering) => {
+                  const item = tab === 'shops' ? catalogMap.get(offering.catalog_id) : serviceMap.get(offering.service_id);
+                  const image = item?.images?.[0];
+                  return (
+                    <div key={offering.id} style={{ ...cardStyle, padding: 11, display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ ...thumbStyle, width: 38, height: 38 }}>
+                        {image ? <img src={image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <FiImage size={15} color={colors.textDim} />}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11.5, fontWeight: 700 }}>{item?.name || 'Untitled offering'}</div>
+                        <div style={{ fontSize: 9.5, color: colors.textMuted }}>
+                          {item?.category || 'General'} {item?.duration ? `· ${item.duration}` : ''}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700 }}>{formatMoney(offering.price ?? item?.price)}</div>
+                        <span style={badgeStyle(offering.in_stock === false || offering.is_active === false ? 'danger' : 'success')}>
+                          {offering.in_stock === false || offering.is_active === false ? 'Unavailable' : 'Available'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <EmptyState icon={FiPackage} title="No offerings yet" description="Products and services linked to this business will appear here." />
+            )
+          ) : null}
+
+          {detailTab === 'reviews' ? (
+            selectedReviews.length ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {selectedReviews.map((review) => {
+                  const customer = userMap.get(review.customer_id);
+                  return (
+                    <div key={review.id} style={{ ...cardStyle, padding: 12 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={avatarStyle}>{customer?.avatar_url ? <img src={customer.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : initials(customer?.full_name || 'M')}</span>
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700 }}>{customer?.full_name || 'Munolink member'}</div>
+                            <div style={{ fontSize: 9.5, color: colors.textDim }}>{timeAgo(review.created_at)}</div>
+                          </div>
+                        </div>
+                        <span style={badgeStyle(review.rating >= 4 ? 'success' : review.rating >= 3 ? 'warning' : 'danger')}>
+                          <FiStar size={9} /> {Number(review.rating || 0).toFixed(1)}
+                        </span>
+                      </div>
+                      {review.title ? <div style={{ marginTop: 8, fontSize: 11, fontWeight: 700 }}>{review.title}</div> : null}
+                      <p style={{ margin: '5px 0 0', fontSize: 10.5, color: colors.textMuted, lineHeight: 1.6 }}>
+                        {review.comment || 'No comment'}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <EmptyState icon={FiStar} title="No reviews yet" description="Customer reviews for this business will appear here." />
+            )
+          ) : null}
+
+          {detailTab === 'documents' ? (
+            selectedDocuments.length ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {selectedDocuments.map((document) => (
+                  <div key={document.id} style={{ ...cardStyle, padding: 11, display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ ...thumbStyle, width: 36, height: 36 }}>
+                      <FiFileText size={15} color={colors.textMuted} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {document.file_name || document.document_type}
+                      </div>
+                      <div style={{ fontSize: 9.5, color: colors.textMuted }}>
+                        {document.document_type || 'Document'} · {timeAgo(document.uploaded_at)}
+                      </div>
+                    </div>
+                    <span style={badgeStyle(document.is_verified ? 'success' : 'warning')}>
+                      {document.is_verified ? 'Verified' : 'Pending'}
+                    </span>
+                    <button type="button" onClick={() => toggleDocument(document)} style={iconButtonStyle} title={document.is_verified ? 'Mark pending' : 'Verify document'}>
+                      <FiCheckCircle size={13} />
+                    </button>
+                    {document.file_url ? (
+                      <a href={document.file_url} target="_blank" rel="noreferrer" style={{ ...iconButtonStyle, textDecoration: 'none' }} title="Open document">
+                        <FiExternalLink size={13} />
+                      </a>
+                    ) : null}
                   </div>
-                );
-              })}
-            </div>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
-              <button onClick={() => setShowEditModal(false)} style={cancelBtn}>Cancel</button>
-              <button onClick={handleSaveEdit} disabled={saving} style={{ ...primaryBtn, opacity: saving ? 0.6 : 1 }}>
-                {saving ? 'Saving...' : 'Save Changes'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={FiFileText} title="No documents" description="Verification documents uploaded by this business will appear here." />
+            )
+          ) : null}
+        </Drawer>
+      ) : null}
 
-      {/* Verify Modal */}
-      {showVerifyModal && selectedItem && (
-        <div style={modalOverlay} onClick={() => setShowVerifyModal(false)}>
-          <div style={{ ...modalContent, width: 450 }} onClick={e => e.stopPropagation()}>
-            <h2 style={{ fontSize: 20, fontWeight: 800, color: '#1F2F5F', margin: '0 0 8px' }}>
-              {selectedItem.is_verified ? 'Unverify' : 'Verify'} {selectedItem.name || selectedItem.full_name}
-            </h2>
-            <p style={{ color: '#8E99B3', fontSize: 13, marginBottom: 16 }}>
-              {selectedItem.is_verified 
-                ? 'This will remove the verification badge from this business.' 
-                : 'This will mark this business as verified on the platform.'}
-            </p>
-            <div style={{ marginBottom: 16 }}>
-              <label style={flabel}>Notes (optional)</label>
-              <textarea
-                value={verificationNote}
-                onChange={(e) => setVerificationNote(e.target.value)}
-                placeholder="Add any notes about this verification..."
-                style={{ ...finput, minHeight: 80, resize: 'vertical' }}
+      {formOpen ? (
+        <Modal
+          title={`Edit ${nameOf(selected, tab)}`}
+          subtitle="Update the business profile and visibility controls."
+          onClose={() => setFormOpen(false)}
+          width={720}
+          footer={
+            <>
+              <button type="button" onClick={() => setFormOpen(false)} style={ghostButton}>Cancel</button>
+              <button type="button" onClick={handleSave} disabled={saving} style={{ ...primaryButton, opacity: saving ? 0.7 : 1 }}>
+                {saving ? 'Saving…' : 'Save business'}
+              </button>
+            </>
+          }
+        >
+          {tab === 'providers' ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 13 }}>
+              <Field label="Full name">
+                <input value={form.full_name || ''} onChange={(event) => setForm({ ...form, full_name: event.target.value })} style={input} />
+              </Field>
+              <Field label="Display name">
+                <input value={form.display_name || ''} onChange={(event) => setForm({ ...form, display_name: event.target.value })} style={input} />
+              </Field>
+              <Field label="Profession">
+                <input value={form.profession || ''} onChange={(event) => setForm({ ...form, profession: event.target.value })} style={input} />
+              </Field>
+              <Field label="Specialty">
+                <input value={form.specialty || ''} onChange={(event) => setForm({ ...form, specialty: event.target.value })} style={input} />
+              </Field>
+              <Field label="Phone">
+                <input value={form.phone || ''} onChange={(event) => setForm({ ...form, phone: event.target.value })} style={input} />
+              </Field>
+              <Field label="Email">
+                <input type="email" value={form.email || ''} onChange={(event) => setForm({ ...form, email: event.target.value })} style={input} />
+              </Field>
+              <Field label="City">
+                <input value={form.city || ''} onChange={(event) => setForm({ ...form, city: event.target.value })} style={input} />
+              </Field>
+              <Field label="Address">
+                <input value={form.address || ''} onChange={(event) => setForm({ ...form, address: event.target.value })} style={input} />
+              </Field>
+              <Field label="Website">
+                <input value={form.website || ''} onChange={(event) => setForm({ ...form, website: event.target.value })} style={input} />
+              </Field>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <Field label="Bio">
+                  <textarea value={form.bio || ''} onChange={(event) => setForm({ ...form, bio: event.target.value })} style={{ ...input, minHeight: 86, resize: 'vertical' }} />
+                </Field>
+              </div>
+            </div>
+          ) : tab === 'institutions' ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 13 }}>
+              <Field label="Name">
+                <input value={form.name || ''} onChange={(event) => setForm({ ...form, name: event.target.value })} style={input} />
+              </Field>
+              <Field label="Type">
+                <input value={form.type || ''} onChange={(event) => setForm({ ...form, type: event.target.value })} placeholder="Clinic, school, SACCO…" style={input} />
+              </Field>
+              <Field label="Phone">
+                <input value={form.phone || ''} onChange={(event) => setForm({ ...form, phone: event.target.value })} style={input} />
+              </Field>
+              <Field label="Email">
+                <input type="email" value={form.email || ''} onChange={(event) => setForm({ ...form, email: event.target.value })} style={input} />
+              </Field>
+              <Field label="Website">
+                <input value={form.website || ''} onChange={(event) => setForm({ ...form, website: event.target.value })} style={input} />
+              </Field>
+              <Field label="City">
+                <input value={form.city || ''} onChange={(event) => setForm({ ...form, city: event.target.value })} style={input} />
+              </Field>
+              <Field label="Area">
+                <input value={form.area || ''} onChange={(event) => setForm({ ...form, area: event.target.value })} style={input} />
+              </Field>
+              <Field label="Address">
+                <input value={form.address || ''} onChange={(event) => setForm({ ...form, address: event.target.value })} style={input} />
+              </Field>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <Field label="Description">
+                  <textarea value={form.description || ''} onChange={(event) => setForm({ ...form, description: event.target.value })} style={{ ...input, minHeight: 86, resize: 'vertical' }} />
+                </Field>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 13 }}>
+              <Field label="Name">
+                <input value={form.name || ''} onChange={(event) => setForm({ ...form, name: event.target.value })} style={input} />
+              </Field>
+              <Field label="Category">
+                <input value={form.category || ''} onChange={(event) => setForm({ ...form, category: event.target.value })} style={input} />
+              </Field>
+              <Field label="Phone">
+                <input value={form.phone || ''} onChange={(event) => setForm({ ...form, phone: event.target.value })} style={input} />
+              </Field>
+              <Field label="City">
+                <input value={form.city || ''} onChange={(event) => setForm({ ...form, city: event.target.value })} style={input} />
+              </Field>
+              <Field label="District">
+                <input value={form.district || ''} onChange={(event) => setForm({ ...form, district: event.target.value })} style={input} />
+              </Field>
+              <Field label="Address">
+                <input value={form.address || ''} onChange={(event) => setForm({ ...form, address: event.target.value })} style={input} />
+              </Field>
+              <Field label="Discount %">
+                <input type="number" min="0" max="100" value={form.discount_percentage ?? ''} onChange={(event) => setForm({ ...form, discount_percentage: event.target.value })} style={input} />
+              </Field>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <Field label="Description">
+                  <textarea value={form.description || ''} onChange={(event) => setForm({ ...form, description: event.target.value })} style={{ ...input, minHeight: 86, resize: 'vertical' }} />
+                </Field>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gap: 8, marginTop: 16 }}>
+            <Toggle
+              checked={Boolean(form.is_verified)}
+              onChange={(checked) => setForm({ ...form, is_verified: checked })}
+              label="Verified"
+              description="Show the Munolink trust badge for this business."
+            />
+            <Toggle
+              checked={tab === 'providers' ? Boolean(form.is_active) : Boolean(form.is_open)}
+              onChange={(checked) =>
+                setForm(
+                  tab === 'providers'
+                    ? { ...form, is_active: checked }
+                    : { ...form, is_open: checked }
+                )
+              }
+              label="Active and visible"
+              description="Inactive businesses stay in the console but are hidden from members."
+            />
+            {tab === 'providers' ? (
+              <Toggle
+                checked={Boolean(form.is_available_for_hire)}
+                onChange={(checked) => setForm({ ...form, is_available_for_hire: checked })}
+                label="Available for hire"
+                description="Shows the provider as accepting new work."
               />
-            </div>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-              <button onClick={() => setShowVerifyModal(false)} style={cancelBtn}>Cancel</button>
-              <button onClick={handleVerify} disabled={saving} style={{ ...primaryBtn, opacity: saving ? 0.6 : 1 }}>
-                {saving ? 'Processing...' : (selectedItem.is_verified ? 'Unverify' : 'Verify')}
-              </button>
-            </div>
+            ) : null}
+            {tab === 'shops' ? (
+              <Toggle
+                checked={Boolean(form.is_anchor_partner)}
+                onChange={(checked) => setForm({ ...form, is_anchor_partner: checked })}
+                label="Anchor partner"
+                description="Highlight this shop as a strategic partner."
+              />
+            ) : null}
           </div>
-        </div>
-      )}
+        </Modal>
+      ) : null}
 
-      {/* Delete Modal */}
-      {showDeleteConfirm && selectedItem && (
-        <div style={modalOverlay} onClick={() => setShowDeleteConfirm(false)}>
-          <div style={{ background: '#FFFFFF', borderRadius: 16, padding: 28, width: 400, textAlign: 'center' }} onClick={e => e.stopPropagation()}>
-            <div style={{ fontSize: 48, marginBottom: 12 }}>⚠️</div>
-            <h2 style={{ fontSize: 18, fontWeight: 800, color: '#1F2F5F', margin: '0 0 8px' }}>
-              Delete {selectedItem.name || selectedItem.full_name}?
-            </h2>
-            <p style={{ color: '#8E99B3', fontSize: 13, marginBottom: 20 }}>
-              This permanently removes this business and all associated data.
-            </p>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-              <button onClick={() => setShowDeleteConfirm(false)} style={cancelBtn}>Cancel</button>
-              <button onClick={handleDelete} disabled={saving} style={dangerBtn}>
-                {saving ? 'Deleting...' : 'Delete'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {deleteTarget ? (
+        <ConfirmDialog
+          title={`Delete ${nameOf(deleteTarget, tab)}?`}
+          description="This removes the business profile from the admin console. Related content and members are not deleted."
+          confirmLabel="Delete business"
+          onConfirm={handleDelete}
+          onClose={() => setDeleteTarget(null)}
+          loading={deleting}
+        />
+      ) : null}
     </div>
   );
 }
 
-// ============================================
-// STYLES
-// ============================================
+function IconButton({ children, title, onClick, tone = 'neutral' }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      style={{
+        ...iconButtonStyle,
+        ...(tone === 'danger'
+          ? { color: colors.danger, borderColor: 'rgba(231,76,60,0.25)', background: colors.dangerSoft }
+          : null),
+      }}
+    >
+      {children}
+    </button>
+  );
+}
 
-const th = {
-  textAlign: 'left',
-  padding: '14px 16px',
-  fontSize: 11,
-  color: '#8E99B3',
-  fontWeight: 600,
-  textTransform: 'uppercase',
-  letterSpacing: 0.5
+function DetailTile({ icon: Icon, label, value }) {
+  return (
+    <div style={{ padding: '10px 12px', borderRadius: radii.md, background: colors.surfaceAlt, border: `1px solid ${colors.border}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 9, fontWeight: 700, color: colors.textDim, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+        {Icon ? <Icon size={10} /> : null} {label}
+      </div>
+      <div style={{ marginTop: 3, fontSize: 11.5, fontWeight: 700, lineHeight: 1.4, wordBreak: 'break-word' }}>{value}</div>
+    </div>
+  );
+}
+
+function SectionTitle({ icon: Icon, title }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8 }}>
+      <Icon size={13} color={colors.textMuted} />
+      <span style={{ fontSize: 10, fontWeight: 800, color: colors.textMuted, letterSpacing: 0.5, textTransform: 'uppercase' }}>{title}</span>
+    </div>
+  );
+}
+
+const cardStyle = {
+  background: colors.surface,
+  border: `1px solid ${colors.border}`,
+  borderRadius: radii.lg,
 };
 
-const td = {
-  padding: '12px 16px',
-  fontSize: 13,
-  color: '#1F2F5F'
-};
-
-const verifiedBadge = {
-  padding: '4px 10px',
-  borderRadius: 12,
-  fontSize: 11,
-  fontWeight: 700,
-  background: '#E8F5E9',
-  color: '#2E7D32'
-};
-
-const pendingBadge = {
-  padding: '4px 10px',
-  borderRadius: 12,
-  fontSize: 11,
-  fontWeight: 700,
-  background: '#FFF3E0',
-  color: '#E65100'
-};
-
-const headerStyles = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'flex-start',
-  marginBottom: 24
-};
-
-const searchInput = {
-  padding: '10px 16px',
-  borderRadius: 10,
-  border: '1px solid #DCE5FF',
-  width: 260,
-  fontSize: 13
-};
-
-const exportBtn = {
-  padding: '10px 18px',
-  borderRadius: 10,
-  border: '1px solid #DCE5FF',
-  background: '#FFFFFF',
-  fontWeight: 600,
-  fontSize: 13,
-  cursor: 'pointer'
-};
-
-const addBtn = {
-  padding: '10px 20px',
-  borderRadius: 10,
-  background: '#4A7DFF',
-  color: '#FFFFFF',
-  border: 'none',
-  fontWeight: 700,
-  fontSize: 13,
-  cursor: 'pointer'
-};
-
-const tableContainer = {
-  background: '#FFFFFF',
-  borderRadius: 16,
-  border: '1px solid #EEF3FF',
-  overflow: 'hidden'
-};
-
-const paginationStyles = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '14px 20px',
-  borderTop: '1px solid #EEF3FF'
-};
-
-const pageBtn = {
-  padding: '8px 14px',
-  borderRadius: 8,
-  border: '1px solid #DCE5FF',
-  fontSize: 12,
-  fontWeight: 600,
-  cursor: 'pointer',
-  background: '#FFFFFF',
-  color: '#1F2F5F'
-};
-
-const panelStyles = {
-  width: 420,
-  flexShrink: 0,
-  background: '#FFFFFF',
-  borderRadius: 16,
-  border: '1px solid #EEF3FF',
-  padding: 20,
-  position: 'sticky',
-  top: 100,
-  alignSelf: 'flex-start',
-  maxHeight: 'calc(100vh - 140px)',
-  overflowY: 'auto'
-};
-
-const panelHeader = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'flex-start',
-  marginBottom: 12
-};
-
-const panelTitle = {
-  fontSize: 18,
-  fontWeight: 800,
-  color: '#1F2F5F',
-  margin: 0
-};
-
-const closeBtn = {
-  background: 'none',
-  border: 'none',
-  fontSize: 20,
-  cursor: 'pointer',
-  color: '#8E99B3',
-  padding: 4
-};
-
-const detailRow = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '8px 0',
-  borderBottom: '1px solid #F5F6FA'
-};
-
-const detailLabel = {
-  fontSize: 12,
-  color: '#8E99B3',
-  fontWeight: 500
-};
-
-const detailValue = {
-  fontSize: 12,
-  color: '#1F2F5F',
-  fontWeight: 600,
-  textAlign: 'right',
-  maxWidth: '60%'
-};
-
-const tabBtn = {
-  padding: '6px 12px',
-  borderRadius: 8,
-  border: 'none',
-  fontSize: 11,
-  fontWeight: 600,
-  cursor: 'pointer',
-  transition: 'all 0.2s'
-};
-
-const actionBtnPrimary = {
-  padding: '10px',
-  borderRadius: 10,
-  background: '#4A7DFF',
-  color: '#FFFFFF',
-  border: 'none',
-  fontWeight: 700,
-  fontSize: 13,
-  cursor: 'pointer'
-};
-
-const actionBtnSecondary = {
-  padding: '10px',
-  borderRadius: 10,
-  background: '#F5F6FA',
-  color: '#1F2F5F',
-  border: '1px solid #DCE5FF',
-  fontWeight: 600,
-  fontSize: 13,
-  cursor: 'pointer'
-};
-
-const actionBtnDanger = {
-  padding: '10px',
-  borderRadius: 10,
-  background: '#FFEBEE',
-  color: '#C62828',
-  border: 'none',
-  fontWeight: 700,
-  fontSize: 13,
-  cursor: 'pointer'
-};
-
-const modalOverlay = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(0,0,0,0.5)',
+const thumbStyle = {
+  width: 42,
+  height: 42,
+  borderRadius: 11,
+  overflow: 'hidden',
+  background: colors.primarySoft,
+  color: colors.primary,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  zIndex: 200
-};
-
-const modalContent = {
-  background: '#FFFFFF',
-  borderRadius: 16,
-  padding: 28,
-  maxHeight: '80vh',
-  overflow: 'auto'
-};
-
-const flabel = {
   fontSize: 12,
-  fontWeight: 600,
-  color: '#1F2F5F',
-  display: 'block',
-  marginBottom: 5
+  fontWeight: 800,
+  flexShrink: 0,
 };
 
-const finput = {
-  width: '100%',
-  padding: '9px 12px',
+const avatarStyle = {
+  width: 27,
+  height: 27,
+  borderRadius: 999,
+  background: colors.primarySoft,
+  color: colors.primary,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontSize: 9,
+  fontWeight: 800,
+  overflow: 'hidden',
+  flexShrink: 0,
+};
+
+const iconButtonStyle = {
+  width: 27,
+  height: 27,
   borderRadius: 8,
-  border: '1px solid #DCE5FF',
-  fontSize: 13,
-  color: '#1F2F5F',
-  background: '#F8FAFF',
-  outline: 'none',
-  boxSizing: 'border-box'
-};
-
-const primaryBtn = {
-  padding: '10px 20px',
-  borderRadius: 10,
-  background: '#4A7DFF',
-  color: '#FFFFFF',
-  border: 'none',
-  fontWeight: 700,
-  fontSize: 13,
-  cursor: 'pointer'
-};
-
-const dangerBtn = {
-  padding: '10px 20px',
-  borderRadius: 10,
-  background: '#F44336',
-  color: '#FFFFFF',
-  border: 'none',
-  fontWeight: 700,
-  fontSize: 13,
-  cursor: 'pointer'
-};
-
-const cancelBtn = {
-  padding: '10px 24px',
-  borderRadius: 10,
-  border: '1px solid #DCE5FF',
-  background: '#FFFFFF',
-  fontWeight: 600,
-  fontSize: 13,
-  cursor: 'pointer'
+  border: `1px solid ${colors.border}`,
+  background: colors.surfaceAlt,
+  color: colors.textMuted,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  cursor: 'pointer',
 };

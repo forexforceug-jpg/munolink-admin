@@ -31,7 +31,6 @@ import {
   Field,
   Notice,
   PageHeader,
-  Toggle,
 } from '../components/ui';
 
 const PLATFORM_KEY = 'munolink.admin.platform';
@@ -69,7 +68,6 @@ export default function Settings() {
     setEnvironment,
     resetSettings,
     formatMoney,
-    settings,
   } = useAppSettings();
   const {
     user,
@@ -212,22 +210,6 @@ export default function Settings() {
                     <option value="YYYY-MM-DD">YYYY-MM-DD</option>
                   </select>
                 </Field>
-              </div>
-
-              <div style={{ marginTop: 16 }}>
-                <Toggle
-                  checked={settings.autoRefresh}
-                  onChange={(checked) => {
-                    // Auto-refresh is a workspace preference for future data pages.
-                    window.localStorage.setItem(
-                      'munolink.admin.settings',
-                      JSON.stringify({ ...settings, autoRefresh: checked })
-                    );
-                    window.location.reload();
-                  }}
-                  label="Auto-refresh data pages"
-                  description="Reload dashboards and tables when the window regains focus."
-                />
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 18 }}>

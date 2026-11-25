@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { db } from '../lib/db';
 import { formatMoney } from '../lib/theme';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 
@@ -8,19 +8,17 @@ export default function Reports() {
   const [reportType, setReportType] = useState('sales');
   const [dateRange, setDateRange] = useState('7d');
   const [exportFormat, setExportFormat] = useState('pdf');
-  const [recentReports, setRecentReports] = useState([]);
-  const [loading, setLoading] = useState(true);
+
 
   useEffect(() => { fetchStats(); }, []);
 
   const fetchStats = async () => {
     try {
-      const { count: users } = await supabase.from('users').select('*', { count: 'exact', head: true });
-      const { count: shops } = await supabase.from('shops').select('*', { count: 'exact', head: true });
-      const { data: txn } = await supabase.from('transactions').select('amount, discount_applied');
+      const { count: users } = await db('users').select('*', { count: 'exact', head: true });
+      const { count: shops } = await db('shops').select('*', { count: 'exact', head: true });
+      const { data: txn } = await db('transactions').select('amount, discount_applied');
 
       const revenue = txn?.reduce((s, t) => s + Number(t.amount || 0), 0) || 0;
-      const discounts = txn?.reduce((s, t) => s + Number(t.discount_applied || 0), 0) || 0;
 
       setStats({
         revenue,
@@ -31,7 +29,6 @@ export default function Reports() {
         profit: Math.round(revenue * 0.3),
       });
     } catch (err) { console.error(err); }
-    setLoading(false);
   };
 
   const statCards = [

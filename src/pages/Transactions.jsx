@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { db } from '../lib/db';
 import { formatMoney } from '../lib/theme';
 
 export default function Transactions() {
@@ -16,7 +16,7 @@ export default function Transactions() {
 
   const fetchTransactions = async () => {
     setLoading(true);
-    const { data } = await supabase.from('transactions').select('*').order('created_at', { ascending: false }).limit(200);
+    const { data } = await db('transactions').select('*').order('created_at', { ascending: false }).limit(200);
     if (data) setTransactions(data);
     setLoading(false);
   };

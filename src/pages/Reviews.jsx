@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { db } from '../lib/db';
 
 const mockReviews = [
   { id: 'mock-1', customer: 'Sarah K.', business: 'FreshMart Supermarket', product: 'Rice 5kg', rating: 5, type: 'product', status: 'published', created_at: '2026-07-05', comment: 'Excellent quality rice! Fresh and well-packaged. Will definitely order again.' },
@@ -28,8 +28,7 @@ export default function Reviews() {
 
   const fetchReviews = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from('reviews')
+    const { data, error } = await db('reviews')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(100);
@@ -54,8 +53,7 @@ export default function Reviews() {
       return;
     }
 
-    const { error } = await supabase
-      .from('reviews')
+    const { error } = await db('reviews')
       .update({ status: newStatus, updated_at: new Date() })
       .eq('id', reviewId);
 
@@ -72,8 +70,7 @@ export default function Reviews() {
       return;
     }
 
-    const { error } = await supabase
-      .from('reviews')
+    const { error } = await db('reviews')
       .delete()
       .eq('id', reviewId);
 

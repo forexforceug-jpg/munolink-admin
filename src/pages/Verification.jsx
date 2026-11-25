@@ -1,1519 +1,1430 @@
-// src/pages/Verification.jsx
-
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { supabase } from '../lib/supabase';
-import { 
-  FiCheckCircle, FiXCircle, FiClock, FiRefreshCw, FiSearch, 
-  FiFilter, FiEye, FiCheck, FiX, FiFileText, FiUser, FiHome,
-  FiBriefcase, FiPhone, FiCalendar, FiMessageSquare, FiDownload,
-  FiExternalLink, FiChevronLeft, FiChevronRight, FiAlertCircle,
-  FiShield, FiUserCheck, FiUserX, FiTrash2, FiEdit2,
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  FiAlertCircle,
+  FiBriefcase,
+  FiCheck,
+  FiCheckCircle,
+  FiClock,
+  FiEye,
+  FiMapPin,
+  FiRefreshCw,
+  FiShield,
+  FiShoppingBag,
+  FiUser,
+  FiX,
+  FiXCircle,
+  FiZap,
 } from 'react-icons/fi';
+import { useAuth } from '../context/AuthContext';
+import { db } from '../lib/db';
+import {
+  getVerificationApprovalMode,
+  saveVerificationApprovalMode,
+} from '../lib/platformSettings';
+import {
+  badgeStyle,
+  card,
+  colors,
+  ghostButton,
+  initials,
+  input,
+  primaryButton,
+  radii,
+  timeAgo,
+} from '../lib/theme';
+import {
+  ConfirmDialog,
+  EmptyState,
+  Field,
+  Modal,
+  Notice,
+  PageHeader,
+  SearchInput,
+  StatCard,
+  TableShell,
+  Td,
+  Th,
+  Toolbar,
+} from '../components/ui';
 
-// ============================================================
-// COMPONENT
-// ============================================================
+const PAGE_SIZE = 10;
+
+const ENTITY_TYPES = {
+  shop: { label: 'Shop', short: 'Shop', table: 'shops', icon: FiShoppingBag, tone: 'primary' },
+  provider: {
+    label: 'Individual provider',
+    short: 'Provider',
+    table: 'individual_providers',
+    icon: FiUser,
+    tone: 'purple',
+  },
+  institution: {
+    label: 'Institution',
+    short: 'Institution',
+    table: 'institutions',
+    icon: FiBriefcase,
+    tone: 'teal',
+  },
+};
+
+function resolveEntityType(request, entity) {
+  if (entity?.__entityType) return entity.__entityType;
+  const haystack = [
+    request.verification_type,
+    request.owner_type,
+    request.business_type,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  if (haystack.includes('provider') || haystack.includes('individual') || haystack.includes('service')) {
+    return 'provider';
+  }
+  if (haystack.includes('institution') || haystack.includes('school') || haystack.includes('clinic')) {
+    return 'institution';
+  }
+  return 'shop';
+}
+
+function entityDisplayName(entity, type) {
+  if (!entity) return 'Unknown entity';
+  if (type === 'provider') {
+    return (
+      entity.display_name ||
+      entity.full_name ||
+      [entity.first_name, entity.last_name].filter(Boolean).join(' ') ||
+      entity.business_name ||
+      entity.email ||
+      'Individual provider'
+    );
+  }
+  return entity.name || entity.display_name || 'Unknown entity';
+}
+
+function entityImage(entity) {
+  return entity?.logo_url || entity?.logo || entity?.profile_image || entity?.cover_image || '';
+}
+
+function entityOwnerId(entity, request, type) {
+  if (type === 'shop') return entity?.owner_id || request.requested_by || null;
+  return entity?.created_by || request.requested_by || null;
+}
+
+function formatDate(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+function BlueTick({ size = 14, title = 'Verified' }) {
+  return (
+    <span
+      title={title}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: size,
+        height: size,
+        borderRadius: '50%',
+        background: colors.primary,
+        color: '#FFFFFF',
+        flexShrink: 0,
+      }}
+    >
+      <FiCheck size={Math.max(8, size - 5)} strokeWidth={4} />
+    </span>
+  );
+}
+
+function StatusBadge({ status }) {
+  const map = {
+    pending: { tone: 'warning', label: 'Pending', icon: FiClock },
+    approved: { tone: 'success', label: 'Approved', icon: FiCheckCircle },
+    rejected: { tone: 'danger', label: 'Rejected', icon: FiXCircle },
+  };
+  const config = map[status] || map.pending;
+  const Icon = config.icon;
+  return (
+    <span style={badgeStyle(config.tone)}>
+      <Icon size={10} /> {config.label}
+    </span>
+  );
+}
 
 export default function Verification() {
+  const { user } = useAuth();
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [selectedRequest, setSelectedRequest] = useState(null);
-  const [showDetailModal, setShowDetailModal] = useState(false);
-  const [rejectionReason, setRejectionReason] = useState('');
-  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [notice, setNotice] = useState(null);
   const [processing, setProcessing] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('pending');
+  const [typeFilter, setTypeFilter] = useState('all');
   const [page, setPage] = useState(1);
-  const pageSize = 10;
-  const [adminUserId, setAdminUserId] = useState(null);
-  const [businessDocuments, setBusinessDocuments] = useState([]);
+  const [selectedRequest, setSelectedRequest] = useState(null);
+  const [showDetail, setShowDetail] = useState(false);
+  const [rejectTarget, setRejectTarget] = useState(null);
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [approvalMode, setApprovalMode] = useState('manual');
+  const [autoConfirm, setAutoConfirm] = useState(false);
 
-  // Stats
-  const [stats, setStats] = useState({
-    pending: 0,
-    approved: 0,
-    rejected: 0,
-    total: 0,
-  });
+  const adminUserId = user?.id || null;
 
-  // ============================================================
-  // FETCH FUNCTIONS - FIXED
-  // ============================================================
+  const showNotice = (tone, message) => setNotice({ tone, message });
 
-  const fetchAdminUser = useCallback(async () => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        // ✅ FIX: Use maybeSingle() instead of single() to avoid 406 errors
-        const { data: profile, error: profileError } = await supabase
-          .from('users')
-          .select('id')
-          .eq('id', user.id)
-          .maybeSingle();
-        
-        if (profileError) {
-          console.error('Profile fetch error:', profileError);
-          // Try to insert the user
-          const { data: newUser, error: insertError } = await supabase
-            .from('users')
-            .insert({
-              id: user.id,
-              phone_number: user.phone || '',
-              full_name: user.user_metadata?.full_name || 'Admin',
-              role: 'admin',
-            })
-            .select()
-            .maybeSingle();
-          
-          if (insertError && insertError.code !== '23505') {
-            console.error('Insert error:', insertError);
-            // Use the user's id as fallback
-            setAdminUserId(user.id);
-          } else if (newUser) {
-            setAdminUserId(newUser.id);
-          } else {
-            setAdminUserId(user.id);
-          }
-        } else if (profile) {
-          setAdminUserId(profile.id);
-        } else {
-          // Try inserting the user
-          const { data: newUser, error: insertError } = await supabase
-            .from('users')
-            .insert({
-              id: user.id,
-              phone_number: user.phone || '',
-              full_name: user.user_metadata?.full_name || 'Admin',
-              role: 'admin',
-            })
-            .select()
-            .maybeSingle();
-          
-          if (insertError && insertError.code !== '23505') {
-            console.error('Insert error:', insertError);
-            setAdminUserId(user.id);
-          } else if (newUser) {
-            setAdminUserId(newUser.id);
-          } else {
-            setAdminUserId(user.id);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching admin user:', error);
-      // Fallback: use the user's id from auth
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) setAdminUserId(user.id);
-    }
-  }, []);
-
-  const fetchRequests = useCallback(async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      // ✅ FIX: Simplified query - don't try to join with users table directly
-      const { data, error } = await supabase
-        .from('verification_requests')
-        .select(`
-          id,
-          business_id,
-          requested_by,
-          status,
-          notes,
-          submitted_at,
-          reviewed_at,
-          reviewed_by,
-          verification_type,
-          owner_type
-        `)
+      const requestResult = await db('verification_requests')
+        .select('*')
         .order('submitted_at', { ascending: false });
+      if (requestResult.error) throw new Error(requestResult.error.message);
 
-      if (error) {
-        console.error('Fetch error:', error);
-        setError(error.message);
-        throw error;
-      }
-      
-      if (!data || data.length === 0) {
-        setRequests([]);
-        setStats({ pending: 0, approved: 0, rejected: 0, total: 0 });
-        setLoading(false);
-        return;
-      }
+      const rows = Array.isArray(requestResult.data) ? requestResult.data : [];
+      const businessIds = [...new Set(rows.map((row) => row.business_id).filter(Boolean))];
+      const userIds = [
+        ...new Set(
+          rows
+            .flatMap((row) => [row.requested_by, row.reviewed_by])
+            .filter(Boolean)
+        ),
+      ];
 
-      // ✅ Get business info separately
-      const businessIds = data.map(r => r.business_id).filter(Boolean);
-      let businessMap = {};
-      if (businessIds.length > 0) {
-        const { data: businesses, error: bizError } = await supabase
-          .from('shops')
-          .select('id, name, category, business_type, is_verified, created_at, owner_id')
-          .in('id', businessIds);
-        
-        if (!bizError && businesses) {
-          businessMap = businesses.reduce((acc, b) => {
-            acc[b.id] = b;
-            return acc;
-          }, {});
+      const entityQueries = businessIds.length
+        ? await Promise.all([
+            db('shops').select('*').in('id', businessIds),
+            db('individual_providers').select('*').in('id', businessIds),
+            db('institutions').select('*').in('id', businessIds),
+          ])
+        : [{ data: [] }, { data: [] }, { data: [] }];
+
+      const userResult = userIds.length
+        ? await db('users')
+            .select('id,full_name,email,phone_number,kyc_verified,avatar_url')
+            .in('id', userIds)
+        : { data: [] };
+
+      const entityMap = new Map();
+      const addEntities = (list, type) => {
+        for (const item of list || []) {
+          if (!entityMap.has(item.id)) {
+            entityMap.set(item.id, { ...item, __entityType: type });
+          }
         }
-      }
+      };
+      addEntities(entityQueries[0].data, 'shop');
+      addEntities(entityQueries[1].data, 'provider');
+      addEntities(entityQueries[2].data, 'institution');
 
-      // ✅ Get requester info separately
-      const userIds = data.map(r => r.requested_by).filter(Boolean);
-      let userMap = {};
-      if (userIds.length > 0) {
-        const { data: users, error: userError } = await supabase
-          .from('users')
-          .select('id, full_name, phone_number')
-          .in('id', userIds);
-        
-        if (!userError && users) {
-          userMap = users.reduce((acc, u) => {
-            acc[u.id] = u;
-            return acc;
-          }, {});
-        }
-      }
+      const userMap = new Map(
+        (Array.isArray(userResult.data) ? userResult.data : []).map((member) => [
+          member.id,
+          member,
+        ])
+      );
 
-      // ✅ Get reviewer info separately
-      const reviewerIds = data.map(r => r.reviewed_by).filter(Boolean);
-      let reviewerMap = {};
-      if (reviewerIds.length > 0) {
-        const { data: reviewers, error: reviewerError } = await supabase
-          .from('users')
-          .select('id, full_name')
-          .in('id', reviewerIds);
-        
-        if (!reviewerError && reviewers) {
-          reviewerMap = reviewers.reduce((acc, r) => {
-            acc[r.id] = r;
-            return acc;
-          }, {});
-        }
-      }
+      const enriched = rows.map((request) => {
+        const entity = entityMap.get(request.business_id) || null;
+        const type = resolveEntityType(request, entity);
+        const ownerId = entityOwnerId(entity, request, type);
+        const owner = ownerId ? userMap.get(ownerId) : null;
+        const requester = request.requested_by
+          ? userMap.get(request.requested_by) || null
+          : null;
+        const reviewer = request.reviewed_by
+          ? userMap.get(request.reviewed_by) || null
+          : null;
+        return {
+          ...request,
+          entity,
+          entityType: type,
+          entityTable: ENTITY_TYPES[type]?.table || 'shops',
+          entityName: entityDisplayName(entity, type),
+          entityImage: entityImage(entity),
+          entityVerified: Boolean(entity?.is_verified),
+          ownerId,
+          owner,
+          ownerName:
+            owner?.full_name ||
+            (type === 'provider' ? entityDisplayName(entity, type) : '') ||
+            requester?.full_name ||
+            'Unknown owner',
+          ownerVerified: Boolean(owner?.kyc_verified),
+          ownerPhone: entity?.phone || requester?.phone_number || '',
+          location: entity?.city || entity?.address || entity?.area || '',
+          requester,
+          reviewer,
+        };
+      });
 
-      // ✅ Combine data
-      const enrichedData = data.map(r => ({
-        ...r,
-        business: businessMap[r.business_id] || null,
-        requester: userMap[r.requested_by] || null,
-        reviewer: reviewerMap[r.reviewed_by] || null,
-      }));
-
-      setRequests(enrichedData);
-
-      // Calculate stats
-      const pending = enrichedData.filter(r => r.status === 'pending').length || 0;
-      const approved = enrichedData.filter(r => r.status === 'approved').length || 0;
-      const rejected = enrichedData.filter(r => r.status === 'rejected').length || 0;
-
-      setStats({ pending, approved, rejected, total: enrichedData.length || 0 });
-
-    } catch (error) {
-      console.error('Error fetching verification requests:', error);
-      setError('Failed to load verification requests. Please try again.');
+      setRequests(enriched);
+      setApprovalMode(await getVerificationApprovalMode());
+    } catch (loadError) {
+      setError(loadError.message || 'Could not load verification requests.');
+      setRequests([]);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const fetchDocuments = useCallback(async (businessId) => {
-    try {
-      // ✅ FIX: Use maybeSingle() and handle empty results
-      const { data, error } = await supabase
-        .from('business_documents')
-        .select('*')
-        .eq('business_id', businessId)
-        .order('uploaded_at', { ascending: false });
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
-      if (error) {
-        console.error('Error fetching documents:', error);
-        setBusinessDocuments([]);
-        return;
-      }
-      setBusinessDocuments(data || []);
-    } catch (error) {
-      console.error('Error fetching documents:', error);
-      setBusinessDocuments([]);
-    }
-  }, []);
+  const stats = useMemo(() => {
+    const pending = requests.filter((row) => row.status === 'pending').length;
+    const approved = requests.filter((row) => row.status === 'approved').length;
+    const rejected = requests.filter((row) => row.status === 'rejected').length;
+    const verifiedEntities = new Set(
+      requests
+        .filter((row) => row.entityVerified)
+        .map((row) => row.business_id)
+        .filter(Boolean)
+    ).size;
+    return { pending, approved, rejected, verifiedEntities, total: requests.length };
+  }, [requests]);
 
-  // ============================================================
-  // EFFECTS
-  // ============================================================
+  const typeCounts = useMemo(
+    () => ({
+      shop: requests.filter((row) => row.entityType === 'shop').length,
+      provider: requests.filter((row) => row.entityType === 'provider').length,
+      institution: requests.filter((row) => row.entityType === 'institution').length,
+    }),
+    [requests]
+  );
+
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return requests.filter((row) => {
+      if (statusFilter !== 'all' && row.status !== statusFilter) return false;
+      if (typeFilter !== 'all' && row.entityType !== typeFilter) return false;
+      if (!query) return true;
+      return [row.entityName, row.ownerName, row.ownerPhone, row.entity?.category, row.location]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    });
+  }, [requests, statusFilter, typeFilter, search]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const paged = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   useEffect(() => {
-    const init = async () => {
-      await fetchAdminUser();
-      await fetchRequests();
-    };
-    init();
-  }, [fetchAdminUser, fetchRequests]);
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
-  // ============================================================
-  // HANDLERS
-  // ============================================================
+  const approveRequest = async (request, reviewerId) => {
+    const now = new Date().toISOString();
+    const requestResult = await db('verification_requests')
+      .update({
+        status: 'approved',
+        reviewed_at: now,
+        reviewed_by: reviewerId,
+        notes: null,
+      })
+      .eq('id', request.id);
+    if (requestResult.error) throw new Error(requestResult.error.message);
 
-  const handleApprove = async (requestId) => {
-    if (!confirm('Approve this business verification?')) return;
-    if (!adminUserId) {
-      alert('Admin user not found. Please refresh and try again.');
-      return;
+    if (request.business_id && request.entityTable) {
+      const entityResult = await db(request.entityTable)
+        .update({ is_verified: true })
+        .eq('id', request.business_id);
+      if (entityResult.error) throw new Error(entityResult.error.message);
     }
 
+    const userIds = [...new Set([request.requested_by, request.ownerId].filter(Boolean))];
+    if (userIds.length) {
+      const userResult = await db('users')
+        .update({ kyc_verified: true })
+        .in('id', userIds);
+      if (userResult.error) throw new Error(userResult.error.message);
+    }
+  };
+
+  const handleApprove = async (request) => {
+    if (!request) return;
+    if (!adminUserId) {
+      showNotice('danger', 'Admin session not found. Refresh and try again.');
+      return;
+    }
     setProcessing(true);
     try {
-      const request = requests.find(r => r.id === requestId);
-      if (!request) throw new Error('Request not found');
-
-      // Update verification request status
-      const { error: reqError } = await supabase
-        .from('verification_requests')
-        .update({
-          status: 'approved',
-          reviewed_at: new Date().toISOString(),
-          reviewed_by: adminUserId,
-        })
-        .eq('id', requestId);
-
-      if (reqError) throw reqError;
-
-      // Update business verification status
-      if (request.business_id) {
-        const { error: bizError } = await supabase
-          .from('shops')
-          .update({ is_verified: true })
-          .eq('id', request.business_id);
-
-        if (bizError) console.error('Error updating business:', bizError);
-      }
-
-      // Update documents
-      if (request.business_id) {
-        const { error: docError } = await supabase
-          .from('business_documents')
-          .update({ 
-            is_verified: true,
-            verified_at: new Date().toISOString(),
-            verified_by: adminUserId,
-          })
-          .eq('business_id', request.business_id);
-
-        if (docError) console.error('Error updating documents:', docError);
-      }
-
-      alert('✅ Business verified successfully!');
-      await fetchRequests();
-      setShowDetailModal(false);
-
-    } catch (error) {
-      console.error('Error approving request:', error);
-      alert('Failed to approve: ' + error.message);
+      await approveRequest(request, adminUserId);
+      setShowDetail(false);
+      setSelectedRequest(null);
+      showNotice('success', `${request.entityName} is verified. The blue tick is now active.`);
+      await loadData();
+    } catch (approveError) {
+      showNotice('danger', approveError.message || 'Could not approve this request.');
     } finally {
       setProcessing(false);
     }
   };
 
-  const handleReject = async (requestId) => {
-    if (!rejectionReason.trim()) {
-      alert('Please provide a reason for rejection.');
+  const handleAutoApprove = async () => {
+    const pending = requests.filter((row) => row.status === 'pending');
+    if (!pending.length) {
+      setAutoConfirm(false);
+      showNotice('warning', 'There are no pending verification requests.');
       return;
     }
-
     if (!adminUserId) {
-      alert('Admin user not found. Please refresh and try again.');
+      setAutoConfirm(false);
+      showNotice('danger', 'Admin session not found. Refresh and try again.');
       return;
     }
+    setProcessing(true);
+    setAutoConfirm(false);
+    let approved = 0;
+    let failed = 0;
+    for (const request of pending) {
+      try {
+        await approveRequest(request, adminUserId);
+        approved += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    showNotice(
+      failed ? 'warning' : 'success',
+      `${approved} request${approved === 1 ? '' : 's'} approved${
+        failed ? `; ${failed} could not be processed` : ''
+      }. Blue ticks were issued for approved owners.`
+    );
+    await loadData();
+    setProcessing(false);
+  };
 
+  const handleReject = async () => {
+    if (!rejectTarget) return;
+    if (!rejectionReason.trim()) {
+      showNotice('danger', 'Add a reason before rejecting this request.');
+      return;
+    }
+    if (!adminUserId) {
+      showNotice('danger', 'Admin session not found. Refresh and try again.');
+      return;
+    }
     setProcessing(true);
     try {
-      const request = requests.find(r => r.id === requestId);
-      if (!request) throw new Error('Request not found');
-
-      const { error: reqError } = await supabase
-        .from('verification_requests')
+      const now = new Date().toISOString();
+      const requestResult = await db('verification_requests')
         .update({
           status: 'rejected',
           notes: rejectionReason.trim(),
-          reviewed_at: new Date().toISOString(),
+          reviewed_at: now,
           reviewed_by: adminUserId,
         })
-        .eq('id', requestId);
+        .eq('id', rejectTarget.id);
+      if (requestResult.error) throw new Error(requestResult.error.message);
 
-      if (reqError) throw reqError;
-
-      if (request.business_id) {
-        const { error: bizError } = await supabase
-          .from('shops')
+      if (rejectTarget.business_id && rejectTarget.entityTable) {
+        const entityResult = await db(rejectTarget.entityTable)
           .update({ is_verified: false })
-          .eq('id', request.business_id);
-
-        if (bizError) console.error('Error updating business:', bizError);
+          .eq('id', rejectTarget.business_id);
+        if (entityResult.error) throw new Error(entityResult.error.message);
       }
 
-      alert('❌ Business verification rejected.');
-      setShowRejectModal(false);
-      setRejectionReason('');
-      await fetchRequests();
-      setShowDetailModal(false);
+      const userIds = [
+        ...new Set([rejectTarget.requested_by, rejectTarget.ownerId].filter(Boolean)),
+      ];
+      const hasAnotherApproval = requests.some(
+        (row) =>
+          row.id !== rejectTarget.id &&
+          row.status === 'approved' &&
+          [row.requested_by, row.ownerId].some((id) => userIds.includes(id))
+      );
+      if (userIds.length && !hasAnotherApproval) {
+        await db('users').update({ kyc_verified: false }).in('id', userIds);
+      }
 
-    } catch (error) {
-      console.error('Error rejecting request:', error);
-      alert('Failed to reject: ' + error.message);
+      setRejectTarget(null);
+      setRejectionReason('');
+      setShowDetail(false);
+      setSelectedRequest(null);
+      showNotice('success', `${rejectTarget.entityName} verification was rejected.`);
+      await loadData();
+    } catch (rejectError) {
+      showNotice('danger', rejectError.message || 'Could not reject this request.');
     } finally {
       setProcessing(false);
     }
   };
 
-  const handleViewDetails = async (request) => {
+  const handleModeChange = async (mode) => {
+    setApprovalMode(mode);
+    const result = await saveVerificationApprovalMode(mode);
+    showNotice(
+      result.persisted ? 'success' : 'warning',
+      result.persisted
+        ? mode === 'automatic'
+          ? 'Automatic approval mode is on. Use Run auto-approval to process the pending queue.'
+          : 'Manual approval mode is on. Every request needs an admin decision.'
+        : 'Saved locally. Create the platform_settings table to share this setting.'
+    );
+  };
+
+  const openDetails = (request) => {
     setSelectedRequest(request);
-    if (request.business_id) {
-      await fetchDocuments(request.business_id);
-    }
-    setShowDetailModal(true);
+    setShowDetail(true);
   };
 
-  // ============================================================
-  // UTILITY FUNCTIONS
-  // ============================================================
-
-  const getStatusBadge = (status) => {
-    const map = {
-      pending: { bg: '#FEF3C7', color: '#D97706', icon: <FiClock size={14} />, label: 'Pending' },
-      approved: { bg: '#D1FAE5', color: '#059669', icon: <FiCheckCircle size={14} />, label: 'Approved' },
-      rejected: { bg: '#FEE2E2', color: '#DC2626', icon: <FiXCircle size={14} />, label: 'Rejected' },
-    };
-    const s = map[status] || map.pending;
-    return (
-      <span style={{ 
-        display: 'inline-flex', 
-        alignItems: 'center', 
-        gap: 6,
-        padding: '4px 12px', 
-        borderRadius: 12, 
-        fontSize: 11, 
-        fontWeight: 600, 
-        background: s.bg, 
-        color: s.color 
-      }}>
-        {s.icon}
-        {s.label}
-      </span>
-    );
+  const openReject = (request) => {
+    setRejectTarget(request);
+    setRejectionReason('');
   };
 
-  const formatDate = (d) => {
-    if (!d) return '—';
-    return new Date(d).toLocaleDateString('en-US', { 
-      year: 'numeric', 
-      month: 'short', 
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
-
-  const getBusinessTypeLabel = (type) => {
-    const map = {
-      shop: { label: 'Shop', icon: <FiBriefcase size={14} /> },
-      service: { label: 'Service Provider', icon: <FiUser size={14} /> },
-      institution: { label: 'Institution', icon: <FiHome size={14} /> },
-    };
-    const result = map[type] || { label: type || 'Unknown', icon: <FiHome size={14} /> };
-    return (
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-        {result.icon}
-        {result.label}
-      </span>
-    );
-  };
-
-  // ============================================================
-  // FILTERING & PAGINATION
-  // ============================================================
-
-  const filteredRequests = useMemo(() => {
-    let filtered = requests;
-
-    if (statusFilter !== 'all') {
-      filtered = filtered.filter(r => r.status === statusFilter);
-    }
-
-    if (search.trim()) {
-      const query = search.toLowerCase();
-      filtered = filtered.filter(r => 
-        r.business?.name?.toLowerCase().includes(query) ||
-        r.requester?.full_name?.toLowerCase().includes(query) ||
-        r.requester?.phone_number?.includes(query)
-      );
-    }
-
-    return filtered;
-  }, [requests, statusFilter, search]);
-
-  const totalPages = Math.ceil(filteredRequests.length / pageSize);
-  const pagedRequests = filteredRequests.slice((page - 1) * pageSize, page * pageSize);
-
-  // ============================================================
-  // RENDER
-  // ============================================================
+  const statusOptions = [
+    { value: 'pending', label: `Pending (${stats.pending})` },
+    { value: 'approved', label: `Approved (${stats.approved})` },
+    { value: 'rejected', label: `Rejected (${stats.rejected})` },
+    { value: 'all', label: `All (${stats.total})` },
+  ];
 
   return (
-    <div style={container}>
-      {/* Header */}
-      <div style={header}>
-        <div>
-          <div style={breadcrumb}>Dashboard / Verification</div>
-          <h1 style={pageTitle}>Verification Management</h1>
-          <p style={pageSubtitle}>Review and manage business verification requests.</p>
-        </div>
-        <button onClick={fetchRequests} style={refreshBtn}>
-          <FiRefreshCw size={16} />
-          Refresh
-        </button>
-      </div>
+    <div>
+      <PageHeader
+        eyebrow="Trust and safety"
+        title="Verification"
+        subtitle="Approve individual providers, institutions and shops. Approved entities receive the blue tick next to their name across web and mobile."
+        actions={
+          <button type="button" onClick={loadData} disabled={loading} style={ghostButton}>
+            <FiRefreshCw size={14} /> {loading ? 'Refreshing...' : 'Refresh'}
+          </button>
+        }
+      />
 
-      {/* Stats */}
-      <div style={statsGrid}>
-        <div style={{ ...statCard, borderLeft: '4px solid #F59E0B' }}>
-          <div style={statValue}>{stats.pending}</div>
-          <div style={statLabel}>
-            <FiClock size={14} style={{ marginRight: 4 }} />
-            Pending
-          </div>
-        </div>
-        <div style={{ ...statCard, borderLeft: '4px solid #10B981' }}>
-          <div style={statValue}>{stats.approved}</div>
-          <div style={statLabel}>
-            <FiCheckCircle size={14} style={{ marginRight: 4 }} />
-            Approved
-          </div>
-        </div>
-        <div style={{ ...statCard, borderLeft: '4px solid #EF4444' }}>
-          <div style={statValue}>{stats.rejected}</div>
-          <div style={statLabel}>
-            <FiXCircle size={14} style={{ marginRight: 4 }} />
-            Rejected
-          </div>
-        </div>
-        <div style={{ ...statCard, borderLeft: '4px solid #3B82F6' }}>
-          <div style={statValue}>{stats.total}</div>
-          <div style={statLabel}>
-            <FiFileText size={14} style={{ marginRight: 4 }} />
-            Total
-          </div>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div style={filtersContainer}>
-        <div style={searchWrapper}>
-          <FiSearch size={18} color="#94A3B8" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
-          <input
-            type="text"
-            placeholder="Search business or owner..."
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            style={searchInput}
-          />
-        </div>
-        <select
-          value={statusFilter}
-          onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
-          style={filterSelect}
-        >
-          <option value="all">All Status</option>
-          <option value="pending">⏳ Pending</option>
-          <option value="approved">✅ Approved</option>
-          <option value="rejected">❌ Rejected</option>
-        </select>
-        <span style={resultCount}>
-          {filteredRequests.length} requests found
-        </span>
-      </div>
-
-      {/* Error State */}
-      {error && (
-        <div style={errorContainer}>
-          <FiAlertCircle size={20} color="#EF4444" />
-          <span style={{ color: '#DC2626', fontSize: 14 }}>{error}</span>
-          <button onClick={fetchRequests} style={errorRetryBtn}>Retry</button>
+      {notice && (
+        <div style={{ marginBottom: 14 }}>
+          <Notice tone={notice.tone}>{notice.message}</Notice>
         </div>
       )}
 
-      {/* Table */}
-      {loading ? (
-        <div style={emptyState}>
-          <div style={loadingSpinner} />
-          <div style={emptyText}>Loading verification requests...</div>
+      {error && (
+        <div style={{ marginBottom: 14 }}>
+          <Notice tone="danger">
+            <FiAlertCircle size={13} /> {error}
+          </Notice>
         </div>
-      ) : filteredRequests.length === 0 ? (
-        <div style={emptyState}>
-          <div style={emptyIcon}>📭</div>
-          <div style={emptyTitle}>No verification requests</div>
-          <div style={emptySubtext}>All businesses have been verified or there are no pending requests.</div>
+      )}
+
+      <section style={{ ...card, padding: 16, marginBottom: 16 }}>
+        <div style={styles.modeRow}>
+          <div style={styles.modeCopy}>
+            <div style={styles.modeTitle}>
+              <FiShield size={16} color={colors.primary} />
+              Approval mode
+            </div>
+            <div style={styles.modeText}>
+              Manual approval requires an admin decision for every request. Automatic mode keeps
+              the setting ready for third-party identity checks and exposes a one-click approval
+              pass for the current queue.
+            </div>
+          </div>
+          <div style={styles.modeActions}>
+            <div style={styles.segmented}>
+              <button
+                type="button"
+                onClick={() => handleModeChange('manual')}
+                style={{
+                  ...styles.segmentButton,
+                  ...(approvalMode === 'manual' ? styles.segmentButtonActive : null),
+                }}
+              >
+                Manual
+              </button>
+              <button
+                type="button"
+                onClick={() => handleModeChange('automatic')}
+                style={{
+                  ...styles.segmentButton,
+                  ...(approvalMode === 'automatic' ? styles.segmentButtonActive : null),
+                }}
+              >
+                Automatic
+              </button>
+            </div>
+            {approvalMode === 'automatic' && (
+              <button
+                type="button"
+                onClick={() => setAutoConfirm(true)}
+                disabled={processing || !stats.pending}
+                style={{
+                  ...primaryButton,
+                  opacity: processing || !stats.pending ? 0.55 : 1,
+                }}
+              >
+                <FiZap size={14} /> Run auto-approval
+              </button>
+            )}
+          </div>
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <Notice tone={approvalMode === 'automatic' ? 'warning' : 'primary'}>
+            {approvalMode === 'automatic'
+              ? 'Automatic mode is enabled. A third-party verification provider can call the same approval flow when its checks pass; until then, use Run auto-approval for the pending queue.'
+              : 'Manual mode is enabled. Document checks will move to a third-party verification provider; this page controls entity status and the blue tick.'}
+          </Notice>
+        </div>
+      </section>
+
+      <div style={styles.statsGrid}>
+        <StatCard
+          icon={FiClock}
+          label="Pending"
+          value={stats.pending}
+          detail="Waiting for an admin decision"
+          tone="warning"
+        />
+        <StatCard
+          icon={FiCheckCircle}
+          label="Approved"
+          value={stats.approved}
+          detail="Blue tick issued to approved owners"
+          tone="success"
+        />
+        <StatCard
+          icon={FiXCircle}
+          label="Rejected"
+          value={stats.rejected}
+          detail="Rejected with reviewer notes"
+          tone="danger"
+        />
+        <StatCard
+          icon={FiShield}
+          label="Verified entities"
+          value={stats.verifiedEntities}
+          detail="Shops, providers and institutions"
+          tone="primary"
+        />
+      </div>
+
+      <div style={styles.typeTabs}>
+        {[
+          { key: 'all', label: 'All types', count: stats.total },
+          { key: 'shop', label: 'Shops', count: typeCounts.shop },
+          { key: 'provider', label: 'Individual providers', count: typeCounts.provider },
+          { key: 'institution', label: 'Institutions', count: typeCounts.institution },
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => {
+              setTypeFilter(tab.key);
+              setPage(1);
+            }}
+            style={{
+              ...styles.typeTab,
+              ...(typeFilter === tab.key ? styles.typeTabActive : null),
+            }}
+          >
+            {tab.label}
+            <span style={styles.typeCount}>{tab.count}</span>
+          </button>
+        ))}
+      </div>
+
+      <Toolbar>
+        <SearchInput
+          value={search}
+          onChange={(value) => {
+            setSearch(value);
+            setPage(1);
+          }}
+          placeholder="Search entity, owner or location..."
+          style={{ flex: 1, maxWidth: 360 }}
+        />
+        <select
+          value={statusFilter}
+          onChange={(event) => {
+            setStatusFilter(event.target.value);
+            setPage(1);
+          }}
+          style={{ ...input, width: 170 }}
+        >
+          {statusOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <span style={styles.resultMeta}>
+          {filtered.length} request{filtered.length === 1 ? '' : 's'} found
+        </span>
+      </Toolbar>
+
+      {loading ? (
+        <div style={{ ...card, padding: 48, textAlign: 'center', color: colors.textMuted }}>
+          Loading verification requests...
+        </div>
+      ) : !paged.length ? (
+        <div style={card}>
+          <EmptyState
+            icon={FiShield}
+            title="No verification requests"
+            description={
+              search || typeFilter !== 'all' || statusFilter !== 'pending'
+                ? 'No requests match the current filters.'
+                : 'New provider, institution and shop verification requests will appear here.'
+            }
+          />
         </div>
       ) : (
-        <div style={tableContainer}>
-          <table style={table}>
+        <TableShell>
+          <table style={styles.table}>
             <thead>
-              <tr style={tableHeader}>
-                <th style={th}>Business</th>
-                <th style={th}>Owner</th>
-                <th style={th}>Type</th>
-                <th style={th}>Submitted</th>
-                <th style={th}>Status</th>
-                <th style={{ ...th, textAlign: 'center' }}>Actions</th>
+              <tr>
+                <Th>Entity</Th>
+                <Th>Owner</Th>
+                <Th>Type</Th>
+                <Th>Submitted</Th>
+                <Th>Status</Th>
+                <Th style={{ textAlign: 'right' }}>Actions</Th>
               </tr>
             </thead>
             <tbody>
-              {pagedRequests.map((request) => {
-                const business = request.business;
-                const requester = request.requester;
+              {paged.map((request) => {
+                const typeConfig = ENTITY_TYPES[request.entityType] || ENTITY_TYPES.shop;
+                const TypeIcon = typeConfig.icon;
                 return (
-                  <tr key={request.id} style={tableRow}>
-                    <td style={td}>
-                      <div style={businessCell}>
-                        <div style={businessName}>{business?.name || 'Unknown Business'}</div>
-                        <div style={businessCategory}>{business?.category || 'No category'}</div>
+                  <tr key={request.id}>
+                    <Td>
+                      <div style={styles.entityCell}>
+                        <div style={styles.avatarWrap}>
+                          {request.entityImage ? (
+                            <img src={request.entityImage} alt="" style={styles.avatarImage} />
+                          ) : (
+                            <span style={styles.avatarFallback}>
+                              {initials(request.entityName)}
+                            </span>
+                          )}
+                        </div>
+                        <div style={styles.entityText}>
+                          <div style={styles.entityNameRow}>
+                            <span style={styles.entityName}>{request.entityName}</span>
+                            {(request.entityVerified || request.status === 'approved') && (
+                              <BlueTick title="Blue tick verified" />
+                            )}
+                          </div>
+                          <div style={styles.entityMeta}>
+                            {request.entity?.category || request.location || 'No category'}
+                          </div>
+                        </div>
                       </div>
-                    </td>
-                    <td style={td}>
-                      <div style={ownerCell}>
-                        <div style={ownerName}>{requester?.full_name || 'Unknown'}</div>
-                        <div style={ownerPhone}>{requester?.phone_number || 'No phone'}</div>
+                    </Td>
+                    <Td>
+                      <div style={styles.ownerCell}>
+                        <div style={styles.ownerNameRow}>
+                          <span style={styles.ownerName}>{request.ownerName}</span>
+                          {request.ownerVerified && <BlueTick size={12} title="Verified owner" />}
+                        </div>
+                        <div style={styles.ownerMeta}>
+                          {request.ownerPhone || request.owner?.email || 'No contact'}
+                        </div>
                       </div>
-                    </td>
-                    <td style={td}>
-                      <span style={typeBadge}>
-                        {getBusinessTypeLabel(business?.business_type)}
+                    </Td>
+                    <Td>
+                      <span style={badgeStyle(typeConfig.tone)}>
+                        <TypeIcon size={10} /> {typeConfig.short}
                       </span>
-                    </td>
-                    <td style={td}>
-                      <div style={dateCell}>{formatDate(request.submitted_at)}</div>
-                    </td>
-                    <td style={td}>{getStatusBadge(request.status)}</td>
-                    <td style={{ ...td, textAlign: 'center' }}>
-                      <button 
-                        onClick={() => handleViewDetails(request)} 
-                        style={viewBtn}
-                      >
-                        <FiEye size={14} />
-                        View
-                      </button>
-                      {request.status === 'pending' && (
-                        <>
-                          <button 
-                            onClick={() => handleApprove(request.id)} 
-                            disabled={processing}
-                            style={{ ...actionBtn, background: '#10B981', color: '#FFFFFF' }}
-                          >
-                            <FiCheck size={14} />
-                          </button>
-                          <button 
-                            onClick={() => {
-                              setSelectedRequest(request);
-                              setRejectionReason('');
-                              setShowRejectModal(true);
-                            }} 
-                            disabled={processing}
-                            style={{ ...actionBtn, background: '#EF4444', color: '#FFFFFF' }}
-                          >
-                            <FiX size={14} />
-                          </button>
-                        </>
-                      )}
-                    </td>
+                    </Td>
+                    <Td>
+                      <div style={styles.dateCell}>{timeAgo(request.submitted_at)}</div>
+                      <div style={styles.dateSub}>{formatDate(request.submitted_at)}</div>
+                    </Td>
+                    <Td>
+                      <StatusBadge status={request.status} />
+                    </Td>
+                    <Td>
+                      <div style={styles.rowActions}>
+                        <button
+                          type="button"
+                          onClick={() => openDetails(request)}
+                          style={styles.iconButton}
+                          title="View details"
+                        >
+                          <FiEye size={13} />
+                        </button>
+                        {request.status === 'pending' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleApprove(request)}
+                              disabled={processing}
+                              style={{ ...styles.iconButton, color: colors.success }}
+                              title="Approve and issue blue tick"
+                            >
+                              <FiCheck size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openReject(request)}
+                              disabled={processing}
+                              style={{ ...styles.iconButton, color: colors.danger }}
+                              title="Reject request"
+                            >
+                              <FiX size={13} />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </Td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
-
-          {/* Pagination */}
-          <div style={paginationContainer}>
-            <span style={paginationInfo}>
-              Showing {pagedRequests.length} of {filteredRequests.length}
+          <div style={styles.pagination}>
+            <span style={styles.pageMeta}>
+              Showing {paged.length} of {filtered.length}
             </span>
-            <div style={paginationControls}>
+            <div style={styles.pageControls}>
               <button
-                onClick={() => setPage(p => Math.max(1, p - 1))}
-                disabled={page === 1}
-                style={{ ...pageBtn, opacity: page === 1 ? 0.5 : 1 }}
+                type="button"
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={safePage === 1}
+                style={{ ...styles.pageButton, opacity: safePage === 1 ? 0.45 : 1 }}
               >
-                <FiChevronLeft size={16} />
+                Previous
               </button>
-              <span style={pageInfo}>
-                Page {page} of {totalPages || 1}
+              <span style={styles.pageInfo}>
+                Page {safePage} of {totalPages}
               </span>
               <button
-                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                disabled={page === totalPages || totalPages === 0}
-                style={{ ...pageBtn, opacity: page === totalPages || totalPages === 0 ? 0.5 : 1 }}
+                type="button"
+                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                disabled={safePage === totalPages}
+                style={{
+                  ...styles.pageButton,
+                  opacity: safePage === totalPages ? 0.45 : 1,
+                }}
               >
-                <FiChevronRight size={16} />
+                Next
               </button>
             </div>
           </div>
-        </div>
+        </TableShell>
       )}
 
-      {/* Modals */}
-      {showDetailModal && renderDetailModal()}
-      {showRejectModal && renderRejectModal()}
-    </div>
-  );
-
-  // ============================================================
-  // MODAL RENDERERS
-  // ============================================================
-
-  function renderDetailModal() {
-    if (!selectedRequest) return null;
-
-    const request = selectedRequest;
-    const business = request.business;
-    const requester = request.requester;
-
-    return (
-      <div style={modalOverlay} onClick={() => setShowDetailModal(false)}>
-        <div style={modalContent} onClick={e => e.stopPropagation()}>
-          <div style={modalHeader}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ 
-                width: 48, 
-                height: 48, 
-                borderRadius: 12, 
-                background: '#EEF3FF', 
-                display: 'flex', 
-                alignItems: 'center', 
-                justifyContent: 'center',
-                fontSize: 24
-              }}>
-                <FiShield size={24} color="#4A7DFF" />
-              </div>
-              <div>
-                <h3 style={modalTitle}>Verification Details</h3>
-                <p style={{ fontSize: 12, color: '#64748B' }}>
-                  {getStatusBadge(request.status)}
-                </p>
-              </div>
-            </div>
-            <button onClick={() => setShowDetailModal(false)} style={closeBtn}>
-              <FiXCircle size={22} />
-            </button>
-          </div>
-
-          <div style={modalBody}>
-            {/* Business Info */}
-            <div style={sectionCard}>
-              <h4 style={sectionTitle}>
-                <FiBriefcase size={16} /> Business Information
-              </h4>
-              <div style={detailGrid}>
-                <div style={detailItem}>
-                  <span style={detailLabel}>Business Name</span>
-                  <span style={detailValue}>{business?.name || '—'}</span>
-                </div>
-                <div style={detailItem}>
-                  <span style={detailLabel}>Type</span>
-                  <span style={detailValue}>{getBusinessTypeLabel(business?.business_type)}</span>
-                </div>
-                <div style={detailItem}>
-                  <span style={detailLabel}>Category</span>
-                  <span style={detailValue}>{business?.category || '—'}</span>
-                </div>
-                <div style={detailItem}>
-                  <span style={detailLabel}>Status</span>
-                  <span style={detailValue}>{getStatusBadge(request.status)}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Owner Info */}
-            <div style={sectionCard}>
-              <h4 style={sectionTitle}>
-                <FiUser size={16} /> Owner Information
-              </h4>
-              <div style={detailGrid}>
-                <div style={detailItem}>
-                  <span style={detailLabel}>Name</span>
-                  <span style={detailValue}>{requester?.full_name || '—'}</span>
-                </div>
-                <div style={detailItem}>
-                  <span style={detailLabel}>Phone</span>
-                  <span style={detailValue}>{requester?.phone_number || '—'}</span>
-                </div>
-                <div style={detailItem}>
-                  <span style={detailLabel}>Submitted</span>
-                  <span style={detailValue}>{formatDate(request.submitted_at)}</span>
-                </div>
-                {request.reviewed_at && (
-                  <div style={detailItem}>
-                    <span style={detailLabel}>Reviewed</span>
-                    <span style={detailValue}>{formatDate(request.reviewed_at)}</span>
-                  </div>
+      {showDetail && selectedRequest && (
+        <Modal
+          title={selectedRequest.entityName}
+          subtitle={`${ENTITY_TYPES[selectedRequest.entityType]?.label || 'Entity'} verification request`}
+          onClose={() => {
+            setShowDetail(false);
+            setSelectedRequest(null);
+          }}
+          width={680}
+          footer={
+            selectedRequest.status === 'pending' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDetail(false);
+                    openReject(selectedRequest);
+                  }}
+                  disabled={processing}
+                  style={{ ...ghostButton, color: colors.danger }}
+                >
+                  <FiX size={14} /> Reject
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleApprove(selectedRequest)}
+                  disabled={processing}
+                  style={{ ...primaryButton, opacity: processing ? 0.65 : 1 }}
+                >
+                  <FiCheckCircle size={14} /> {processing ? 'Approving...' : 'Approve and issue blue tick'}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDetail(false);
+                  setSelectedRequest(null);
+                }}
+                style={ghostButton}
+              >
+                Close
+              </button>
+            )
+          }
+        >
+          <div style={styles.detailBody}>
+            <div style={styles.detailHero}>
+              <div style={styles.detailAvatarWrap}>
+                {selectedRequest.entityImage ? (
+                  <img src={selectedRequest.entityImage} alt="" style={styles.detailAvatar} />
+                ) : (
+                  <span style={styles.detailAvatarFallback}>
+                    {initials(selectedRequest.entityName)}
+                  </span>
                 )}
               </div>
-            </div>
-
-            {/* Documents */}
-            <div style={sectionCard}>
-              <h4 style={sectionTitle}>
-                <FiFileText size={16} /> Uploaded Documents
-              </h4>
-              {businessDocuments.length === 0 ? (
-                <p style={{ color: '#64748B', fontSize: 13 }}>No documents uploaded</p>
-              ) : (
-                <div style={documentsList}>
-                  {businessDocuments.map((doc, index) => (
-                    <div key={index} style={documentItem}>
-                      <div style={documentInfo}>
-                        <div style={documentIcon}>
-                          <FiFileText size={16} color="#4A7DFF" />
-                        </div>
-                        <div>
-                          <div style={documentName}>{doc.file_name}</div>
-                          <div style={documentMeta}>
-                            <span style={documentType}>{doc.document_type?.replace('_', ' ').toUpperCase()}</span>
-                            <span style={documentSize}>{(doc.file_size / 1024).toFixed(1)} KB</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div style={documentActions}>
-                        {doc.file_url && (
-                          <button 
-                            onClick={() => window.open(doc.file_url, '_blank')} 
-                            style={viewDocBtn}
-                          >
-                            <FiExternalLink size={14} />
-                            View
-                          </button>
-                        )}
-                        <span style={{ 
-                          ...docStatusBadge,
-                          background: doc.is_verified ? '#D1FAE5' : '#FEF3C7',
-                          color: doc.is_verified ? '#059669' : '#D97706',
-                        }}>
-                          {doc.is_verified ? 'Verified' : 'Pending'}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Notes */}
-            {request.notes && (
-              <div style={sectionCard}>
-                <h4 style={sectionTitle}>
-                  <FiMessageSquare size={16} /> Rejection Notes
-                </h4>
-                <p style={{ 
-                  fontSize: 13, 
-                  color: '#DC2626', 
-                  background: '#FEF2F2', 
-                  padding: 12, 
-                  borderRadius: 8,
-                  border: '1px solid #FECACA',
-                }}>
-                  {request.notes}
-                </p>
-              </div>
-            )}
-
-            {/* Actions */}
-            {request.status === 'pending' && (
-              <div style={actionContainer}>
-                <button 
-                  onClick={() => {
-                    setShowDetailModal(false);
-                    setRejectionReason('');
-                    setShowRejectModal(true);
-                  }} 
-                  disabled={processing}
-                  style={rejectBtn}
-                >
-                  <FiX size={16} />
-                  Reject
-                </button>
-                <button 
-                  onClick={() => handleApprove(request.id)} 
-                  disabled={processing}
-                  style={approveBtn}
-                >
-                  <FiCheck size={16} />
-                  Approve
-                </button>
-              </div>
-            )}
-
-            {request.status !== 'pending' && (
-              <div style={actionContainer}>
-                <span style={{ fontSize: 13, color: '#64748B' }}>
-                  {request.status === 'approved' ? (
-                    <span style={{ color: '#059669' }}>✅ This business has been verified</span>
-                  ) : (
-                    <span style={{ color: '#DC2626' }}>❌ This business verification was rejected</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={styles.detailNameRow}>
+                  <span style={styles.detailName}>{selectedRequest.entityName}</span>
+                  {(selectedRequest.entityVerified || selectedRequest.status === 'approved') && (
+                    <BlueTick size={18} title="Blue tick verified" />
                   )}
-                  {request.reviewed_at && ` on ${formatDate(request.reviewed_at)}`}
-                </span>
+                </div>
+                <div style={styles.detailMetaRow}>
+                  <StatusBadge status={selectedRequest.status} />
+                  <span style={badgeStyle(ENTITY_TYPES[selectedRequest.entityType]?.tone)}>
+                    {ENTITY_TYPES[selectedRequest.entityType]?.label}
+                  </span>
+                  {selectedRequest.location && (
+                    <span style={styles.detailLocation}>
+                      <FiMapPin size={11} /> {selectedRequest.location}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.detailGrid}>
+              <div style={styles.detailCard}>
+                <div style={styles.detailCardTitle}>Entity details</div>
+                <div style={styles.kv}>
+                  <span>Name</span>
+                  <strong>{selectedRequest.entityName}</strong>
+                </div>
+                <div style={styles.kv}>
+                  <span>Category</span>
+                  <strong>{selectedRequest.entity?.category || selectedRequest.entity?.type || '-'}</strong>
+                </div>
+                <div style={styles.kv}>
+                  <span>Phone</span>
+                  <strong>{selectedRequest.entity?.phone || selectedRequest.ownerPhone || '-'}</strong>
+                </div>
+                <div style={styles.kv}>
+                  <span>Location</span>
+                  <strong>{selectedRequest.location || '-'}</strong>
+                </div>
+                <div style={styles.kv}>
+                  <span>Entity ID</span>
+                  <strong style={styles.mono}>{selectedRequest.business_id || '-'}</strong>
+                </div>
+              </div>
+
+              <div style={styles.detailCard}>
+                <div style={styles.detailCardTitle}>Owner details</div>
+                <div style={styles.kv}>
+                  <span>Owner</span>
+                  <strong style={styles.inlineStrong}>
+                    {selectedRequest.ownerName}
+                    {selectedRequest.ownerVerified && <BlueTick size={12} title="Verified owner" />}
+                  </strong>
+                </div>
+                <div style={styles.kv}>
+                  <span>Email</span>
+                  <strong>{selectedRequest.owner?.email || selectedRequest.requester?.email || '-'}</strong>
+                </div>
+                <div style={styles.kv}>
+                  <span>Phone</span>
+                  <strong>{selectedRequest.ownerPhone || '-'}</strong>
+                </div>
+                <div style={styles.kv}>
+                  <span>Blue tick</span>
+                  <strong>{selectedRequest.ownerVerified ? 'Active' : 'Not active'}</strong>
+                </div>
+                <div style={styles.kv}>
+                  <span>Owner ID</span>
+                  <strong style={styles.mono}>{selectedRequest.ownerId || '-'}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.blueTickCard}>
+              <div style={styles.blueTickIcon}>
+                <BlueTick size={24} />
+              </div>
+              <div>
+                <div style={styles.blueTickTitle}>Blue tick policy</div>
+                <div style={styles.blueTickText}>
+                  Approval sets the entity as verified and marks the owner and requester as
+                  blue-tick verified. Mobile renders the blue check next to the author name on
+                  posts and featured cards. Rejecting removes the tick only when the owner has no
+                  other approved verification.
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.detailCard}>
+              <div style={styles.detailCardTitle}>Request details</div>
+              <div style={styles.kv}>
+                <span>Verification type</span>
+                <strong>{selectedRequest.verification_type || '-'}</strong>
+              </div>
+              <div style={styles.kv}>
+                <span>Submitted</span>
+                <strong>{formatDate(selectedRequest.submitted_at)}</strong>
+              </div>
+              <div style={styles.kv}>
+                <span>Reviewed</span>
+                <strong>{formatDate(selectedRequest.reviewed_at)}</strong>
+              </div>
+              <div style={styles.kv}>
+                <span>Reviewer</span>
+                <strong>{selectedRequest.reviewer?.full_name || selectedRequest.reviewed_by || '-'}</strong>
+              </div>
+            </div>
+
+            {selectedRequest.notes && (
+              <div style={styles.notesCard}>
+                <div style={styles.notesTitle}>Reviewer notes</div>
+                <div style={styles.notesText}>{selectedRequest.notes}</div>
               </div>
             )}
-          </div>
-        </div>
-      </div>
-    );
-  }
 
-  function renderRejectModal() {
-    if (!showRejectModal) return null;
-
-    return (
-      <div style={modalOverlay} onClick={() => setShowRejectModal(false)}>
-        <div style={{ ...modalContent, maxWidth: 500 }} onClick={e => e.stopPropagation()}>
-          <div style={modalHeader}>
-            <h3 style={modalTitle}>
-              <FiXCircle size={20} color="#DC2626" style={{ marginRight: 8 }} />
-              Reject Verification
-            </h3>
-            <button onClick={() => setShowRejectModal(false)} style={closeBtn}>
-              <FiXCircle size={22} />
-            </button>
+            <Notice tone="primary">
+              Document collection and third-party identity checks are not part of this page yet.
+              This workflow controls entity verification, owner blue ticks and approval mode.
+            </Notice>
           </div>
-          <div style={modalBody}>
-            <p style={{ fontSize: 13, color: '#64748B', marginBottom: 16 }}>
-              Please provide a reason for rejecting this verification request.
-            </p>
-            <textarea
-              value={rejectionReason}
-              onChange={(e) => setRejectionReason(e.target.value)}
-              placeholder="Enter rejection reason..."
-              style={textArea}
-            />
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16 }}>
-              <button onClick={() => setShowRejectModal(false)} style={cancelBtn}>
+        </Modal>
+      )}
+
+      {rejectTarget && (
+        <Modal
+          title="Reject verification"
+          subtitle={`Reject ${rejectTarget.entityName} and record the reason.`}
+          onClose={() => {
+            setRejectTarget(null);
+            setRejectionReason('');
+          }}
+          width={480}
+          footer={
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setRejectTarget(null);
+                  setRejectionReason('');
+                }}
+                style={ghostButton}
+              >
                 Cancel
               </button>
-              <button 
-                onClick={() => handleReject(selectedRequest?.id)} 
+              <button
+                type="button"
+                onClick={handleReject}
                 disabled={processing || !rejectionReason.trim()}
-                style={{ ...rejectBtn, opacity: (processing || !rejectionReason.trim()) ? 0.6 : 1 }}
+                style={{
+                  ...ghostButton,
+                  color: colors.danger,
+                  opacity: processing || !rejectionReason.trim() ? 0.55 : 1,
+                }}
               >
-                {processing ? 'Processing...' : 'Reject'}
+                <FiX size={14} /> {processing ? 'Rejecting...' : 'Reject request'}
               </button>
-            </div>
+            </>
+          }
+        >
+          <div style={{ display: 'grid', gap: 12 }}>
+            <Field label="Reason" hint="This is stored on the verification request.">
+              <textarea
+                value={rejectionReason}
+                onChange={(event) => setRejectionReason(event.target.value)}
+                placeholder="Explain why this verification was rejected..."
+                style={{ ...input, minHeight: 110, resize: 'vertical', fontFamily: 'inherit' }}
+              />
+            </Field>
+            <Notice tone="danger">
+              Rejecting removes entity verification and may remove the owner's blue tick if no
+              other approved verification exists.
+            </Notice>
           </div>
-        </div>
-      </div>
-    );
-  }
+        </Modal>
+      )}
+
+      {autoConfirm && (
+        <ConfirmDialog
+          title="Approve all pending requests?"
+          description={`This will approve ${stats.pending} pending verification request${
+            stats.pending === 1 ? '' : 's'
+          }, mark each entity verified and issue blue ticks to the linked owners.`}
+          confirmLabel="Approve pending"
+          tone="primary"
+          loading={processing}
+          onConfirm={handleAutoApprove}
+          onClose={() => setAutoConfirm(false)}
+        />
+      )}
+    </div>
+  );
 }
 
-// ============================================================
-// STYLES
-// ============================================================
-
-const container = {
-  padding: '30px 32px',
-  maxWidth: '1400px',
-  margin: '0 auto',
-  background: '#F8FAFC',
-  minHeight: '100vh',
+const styles = {
+  modeRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+    flexWrap: 'wrap',
+  },
+  modeCopy: {
+    maxWidth: 700,
+  },
+  modeTitle: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    fontSize: 14,
+    fontWeight: 800,
+  },
+  modeText: {
+    marginTop: 5,
+    fontSize: 11,
+    color: colors.textMuted,
+    lineHeight: 1.6,
+  },
+  modeActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  segmented: {
+    display: 'flex',
+    gap: 4,
+    padding: 4,
+    borderRadius: radii.md,
+    background: colors.bgSoft,
+    border: `1px solid ${colors.border}`,
+  },
+  segmentButton: {
+    padding: '7px 13px',
+    borderRadius: 8,
+    border: '1px solid transparent',
+    background: 'transparent',
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  segmentButtonActive: {
+    background: colors.primarySoft,
+    border: `1px solid ${colors.primaryBorder}`,
+    color: colors.text,
+  },
+  statsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+    gap: 12,
+    marginBottom: 16,
+  },
+  typeTabs: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 7,
+    marginBottom: 12,
+  },
+  typeTab: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 7,
+    padding: '8px 12px',
+    borderRadius: radii.pill,
+    border: `1px solid ${colors.border}`,
+    background: colors.surfaceAlt,
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  typeTabActive: {
+    background: colors.primarySoft,
+    border: `1px solid ${colors.primaryBorder}`,
+    color: colors.text,
+  },
+  typeCount: {
+    padding: '1px 6px',
+    borderRadius: radii.pill,
+    background: 'rgba(255,255,255,0.08)',
+    fontSize: 9,
+    color: colors.textDim,
+  },
+  resultMeta: {
+    marginLeft: 'auto',
+    fontSize: 10,
+    color: colors.textDim,
+  },
+  table: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    minWidth: 850,
+  },
+  entityCell: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 9,
+  },
+  avatarWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    overflow: 'hidden',
+    background: colors.surfaceAlt,
+    flexShrink: 0,
+    display: 'grid',
+    placeItems: 'center',
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+  },
+  avatarFallback: {
+    fontSize: 11,
+    fontWeight: 800,
+    color: colors.primary,
+  },
+  entityText: {
+    minWidth: 0,
+  },
+  entityNameRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
+  },
+  entityName: {
+    fontSize: 11.5,
+    fontWeight: 700,
+    color: colors.text,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  entityMeta: {
+    marginTop: 2,
+    fontSize: 10,
+    color: colors.textDim,
+  },
+  ownerCell: {
+    minWidth: 0,
+  },
+  ownerNameRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
+  },
+  ownerName: {
+    fontSize: 11.5,
+    fontWeight: 600,
+    color: colors.text,
+  },
+  ownerMeta: {
+    marginTop: 2,
+    fontSize: 10,
+    color: colors.textDim,
+  },
+  dateCell: {
+    fontSize: 11,
+    color: colors.textMuted,
+  },
+  dateSub: {
+    marginTop: 2,
+    fontSize: 9.5,
+    color: colors.textDim,
+  },
+  rowActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 5,
+  },
+  iconButton: {
+    width: 28,
+    height: 28,
+    display: 'grid',
+    placeItems: 'center',
+    borderRadius: 8,
+    border: `1px solid ${colors.border}`,
+    background: colors.surfaceAlt,
+    color: colors.textMuted,
+    cursor: 'pointer',
+  },
+  pagination: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    padding: '12px 14px',
+    borderTop: `1px solid ${colors.border}`,
+  },
+  pageMeta: {
+    fontSize: 10,
+    color: colors.textDim,
+  },
+  pageControls: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pageButton: {
+    padding: '7px 11px',
+    borderRadius: 8,
+    border: `1px solid ${colors.border}`,
+    background: colors.surfaceAlt,
+    color: colors.text,
+    fontSize: 10.5,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  pageInfo: {
+    fontSize: 10,
+    color: colors.textMuted,
+  },
+  detailBody: {
+    display: 'grid',
+    gap: 14,
+  },
+  detailHero: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 14,
+    padding: 14,
+    borderRadius: radii.lg,
+    background: colors.bgSoft,
+    border: `1px solid ${colors.border}`,
+  },
+  detailAvatarWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 18,
+    overflow: 'hidden',
+    background: colors.surfaceAlt,
+    display: 'grid',
+    placeItems: 'center',
+    flexShrink: 0,
+  },
+  detailAvatar: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+  },
+  detailAvatarFallback: {
+    fontSize: 18,
+    fontWeight: 800,
+    color: colors.primary,
+  },
+  detailNameRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  detailName: {
+    fontSize: 17,
+    fontWeight: 800,
+  },
+  detailMetaRow: {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 7,
+    marginTop: 7,
+  },
+  detailLocation: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    fontSize: 10,
+    color: colors.textDim,
+  },
+  detailGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+    gap: 12,
+  },
+  detailCard: {
+    padding: 14,
+    borderRadius: radii.md,
+    background: colors.surfaceAlt,
+    border: `1px solid ${colors.border}`,
+  },
+  detailCardTitle: {
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: 0.7,
+    textTransform: 'uppercase',
+    color: colors.textDim,
+    marginBottom: 9,
+  },
+  kv: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 14,
+    padding: '6px 0',
+    borderBottom: `1px solid ${colors.border}`,
+    fontSize: 10.5,
+    color: colors.textMuted,
+  },
+  inlineStrong: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    color: colors.text,
+    textAlign: 'right',
+  },
+  mono: {
+    fontFamily: 'monospace',
+    fontSize: 9.5,
+    maxWidth: 180,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  blueTickCard: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 12,
+    padding: 14,
+    borderRadius: radii.md,
+    background: colors.primarySoft,
+    border: `1px solid ${colors.primaryBorder}`,
+  },
+  blueTickIcon: {
+    flexShrink: 0,
+  },
+  blueTickTitle: {
+    fontSize: 12,
+    fontWeight: 800,
+    color: colors.text,
+  },
+  blueTickText: {
+    marginTop: 4,
+    fontSize: 10.5,
+    color: colors.textMuted,
+    lineHeight: 1.6,
+  },
+  notesCard: {
+    padding: 14,
+    borderRadius: radii.md,
+    background: colors.dangerSoft,
+    border: `1px solid rgba(231,76,60,0.3)`,
+  },
+  notesTitle: {
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: 0.7,
+    textTransform: 'uppercase',
+    color: colors.danger,
+    marginBottom: 5,
+  },
+  notesText: {
+    fontSize: 11,
+    color: colors.text,
+    lineHeight: 1.6,
+  },
 };
-
-const header = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'flex-start',
-  marginBottom: 24,
-};
-
-const breadcrumb = {
-  fontSize: 12,
-  color: '#64748B',
-  marginBottom: 4,
-};
-
-const pageTitle = {
-  fontSize: 26,
-  fontWeight: 800,
-  color: '#0F172A',
-  margin: 0,
-};
-
-const pageSubtitle = {
-  color: '#64748B',
-  fontSize: 14,
-  marginTop: 4,
-};
-
-const refreshBtn = {
-  padding: '10px 20px',
-  borderRadius: 10,
-  border: '1px solid #E2E8F0',
-  background: '#FFFFFF',
-  fontWeight: 600,
-  fontSize: 13,
-  color: '#3B82F6',
-  cursor: 'pointer',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  transition: 'all 0.2s',
-};
-
-const statsGrid = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(4, 1fr)',
-  gap: 16,
-  marginBottom: 24,
-};
-
-const statCard = {
-  background: '#FFFFFF',
-  borderRadius: 12,
-  padding: '18px 20px',
-  border: '1px solid #E2E8F0',
-};
-
-const statValue = {
-  fontSize: 28,
-  fontWeight: 800,
-  color: '#0F172A',
-};
-
-const statLabel = {
-  fontSize: 13,
-  color: '#64748B',
-  marginTop: 4,
-  display: 'flex',
-  alignItems: 'center',
-};
-
-const filtersContainer = {
-  display: 'flex',
-  gap: 12,
-  alignItems: 'center',
-  marginBottom: 20,
-  flexWrap: 'wrap',
-};
-
-const searchWrapper = {
-  position: 'relative',
-  flex: 1,
-  maxWidth: 320,
-};
-
-const searchInput = {
-  width: '100%',
-  padding: '10px 16px 10px 40px',
-  borderRadius: 10,
-  border: '1px solid #E2E8F0',
-  fontSize: 13,
-  background: '#FFFFFF',
-  outline: 'none',
-  transition: 'border-color 0.2s',
-};
-
-const filterSelect = {
-  padding: '10px 16px',
-  borderRadius: 10,
-  border: '1px solid #E2E8F0',
-  fontSize: 13,
-  background: '#FFFFFF',
-  color: '#0F172A',
-  cursor: 'pointer',
-  outline: 'none',
-};
-
-const resultCount = {
-  fontSize: 13,
-  color: '#64748B',
-  marginLeft: 'auto',
-};
-
-const errorContainer = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 12,
-  padding: '16px 20px',
-  background: '#FEF2F2',
-  borderRadius: 12,
-  border: '1px solid #FECACA',
-  marginBottom: 20,
-};
-
-const errorRetryBtn = {
-  padding: '6px 16px',
-  borderRadius: 8,
-  border: '1px solid #FCA5A5',
-  background: '#FFFFFF',
-  color: '#DC2626',
-  fontSize: 12,
-  fontWeight: 600,
-  cursor: 'pointer',
-  marginLeft: 'auto',
-};
-
-const tableContainer = {
-  background: '#FFFFFF',
-  borderRadius: 16,
-  border: '1px solid #E2E8F0',
-  overflow: 'hidden',
-};
-
-const table = {
-  width: '100%',
-  borderCollapse: 'collapse',
-};
-
-const tableHeader = {
-  background: '#F8FAFC',
-  borderBottom: '1px solid #E2E8F0',
-};
-
-const th = {
-  textAlign: 'left',
-  padding: '14px 16px',
-  fontSize: 11,
-  color: '#64748B',
-  fontWeight: 600,
-  textTransform: 'uppercase',
-  letterSpacing: 0.5,
-};
-
-const td = {
-  padding: '12px 16px',
-  fontSize: 13,
-  color: '#0F172A',
-};
-
-const tableRow = {
-  borderBottom: '1px solid #F1F5F9',
-  transition: 'background 0.2s',
-};
-
-const businessCell = {
-  display: 'flex',
-  flexDirection: 'column',
-};
-
-const businessName = {
-  fontWeight: 600,
-  fontSize: 13,
-  color: '#0F172A',
-};
-
-const businessCategory = {
-  fontSize: 11,
-  color: '#64748B',
-  marginTop: 2,
-};
-
-const ownerCell = {
-  display: 'flex',
-  flexDirection: 'column',
-};
-
-const ownerName = {
-  fontSize: 13,
-  color: '#0F172A',
-};
-
-const ownerPhone = {
-  fontSize: 11,
-  color: '#64748B',
-  marginTop: 2,
-};
-
-const typeBadge = {
-  padding: '4px 10px',
-  borderRadius: 10,
-  fontSize: 11,
-  fontWeight: 600,
-  background: '#EEF3FF',
-  color: '#3B82F6',
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 4,
-};
-
-const dateCell = {
-  fontSize: 12,
-  color: '#64748B',
-};
-
-const viewBtn = {
-  padding: '6px 14px',
-  borderRadius: 6,
-  border: 'none',
-  fontSize: 12,
-  fontWeight: 600,
-  cursor: 'pointer',
-  background: '#EEF3FF',
-  color: '#3B82F6',
-  marginRight: 4,
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 4,
-  transition: 'all 0.2s',
-};
-
-const actionBtn = {
-  padding: '6px 10px',
-  borderRadius: 6,
-  border: 'none',
-  fontSize: 12,
-  cursor: 'pointer',
-  marginLeft: 4,
-  display: 'inline-flex',
-  alignItems: 'center',
-  transition: 'all 0.2s',
-};
-
-const paginationContainer = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '14px 20px',
-  borderTop: '1px solid #E2E8F0',
-};
-
-const paginationInfo = {
-  fontSize: 13,
-  color: '#64748B',
-};
-
-const paginationControls = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-};
-
-const pageBtn = {
-  padding: '8px 12px',
-  borderRadius: 8,
-  border: '1px solid #E2E8F0',
-  fontSize: 12,
-  fontWeight: 600,
-  cursor: 'pointer',
-  background: '#FFFFFF',
-  color: '#0F172A',
-  display: 'flex',
-  alignItems: 'center',
-  transition: 'all 0.2s',
-};
-
-const pageInfo = {
-  padding: '8px 14px',
-  fontSize: 13,
-  color: '#64748B',
-};
-
-const emptyState = {
-  textAlign: 'center',
-  padding: 60,
-  color: '#64748B',
-  background: '#FFFFFF',
-  borderRadius: 16,
-  border: '1px solid #E2E8F0',
-};
-
-const emptyIcon = {
-  fontSize: 48,
-  marginBottom: 16,
-};
-
-const emptyTitle = {
-  fontSize: 18,
-  fontWeight: 600,
-  color: '#0F172A',
-  marginBottom: 4,
-};
-
-const emptySubtext = {
-  fontSize: 14,
-  color: '#64748B',
-};
-
-const emptyText = {
-  fontSize: 14,
-  color: '#64748B',
-  marginTop: 12,
-};
-
-const loadingSpinner = {
-  width: 40,
-  height: 40,
-  border: '4px solid #E2E8F0',
-  borderTop: '4px solid #3B82F6',
-  borderRadius: '50%',
-  animation: 'spin 1s linear infinite',
-  margin: '0 auto 16px',
-};
-
-// Modal Styles
-const modalOverlay = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(0,0,0,0.5)',
-  backdropFilter: 'blur(4px)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 200,
-  padding: 20,
-};
-
-const modalContent = {
-  background: '#FFFFFF',
-  borderRadius: 16,
-  maxWidth: 700,
-  width: '100%',
-  maxHeight: '85vh',
-  overflow: 'hidden',
-  display: 'flex',
-  flexDirection: 'column',
-  boxShadow: '0 20px 60px rgba(0,0,0,0.15)',
-};
-
-const modalHeader = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '20px 24px',
-  borderBottom: '1px solid #E2E8F0',
-};
-
-const modalTitle = {
-  fontSize: 20,
-  fontWeight: 700,
-  color: '#0F172A',
-  margin: 0,
-};
-
-const modalBody = {
-  padding: '24px',
-  overflowY: 'auto',
-  flex: 1,
-};
-
-const closeBtn = {
-  background: 'none',
-  border: 'none',
-  cursor: 'pointer',
-  color: '#64748B',
-  padding: 4,
-  display: 'flex',
-  alignItems: 'center',
-};
-
-const sectionCard = {
-  marginBottom: 20,
-  paddingBottom: 20,
-  borderBottom: '1px solid #E2E8F0',
-};
-
-const sectionTitle = {
-  fontSize: 14,
-  fontWeight: 700,
-  color: '#0F172A',
-  margin: '0 0 12px 0',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-};
-
-const detailGrid = {
-  display: 'grid',
-  gridTemplateColumns: '1fr 1fr',
-  gap: 8,
-};
-
-const detailItem = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '6px 0',
-  borderBottom: '1px solid #F1F5F9',
-};
-
-const detailLabel = {
-  fontSize: 12,
-  color: '#64748B',
-  fontWeight: 500,
-};
-
-const detailValue = {
-  fontSize: 12,
-  color: '#0F172A',
-  fontWeight: 600,
-  textAlign: 'right',
-  maxWidth: '60%',
-};
-
-const documentsList = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-};
-
-const documentItem = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '10px 14px',
-  background: '#F8FAFC',
-  borderRadius: 8,
-  border: '1px solid #E2E8F0',
-};
-
-const documentInfo = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 12,
-};
-
-const documentIcon = {
-  width: 36,
-  height: 36,
-  borderRadius: 8,
-  background: '#EEF3FF',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-};
-
-const documentName = {
-  fontSize: 13,
-  fontWeight: 500,
-  color: '#0F172A',
-};
-
-const documentMeta = {
-  display: 'flex',
-  gap: 8,
-  marginTop: 2,
-};
-
-const documentType = {
-  fontSize: 11,
-  color: '#64748B',
-  padding: '2px 8px',
-  borderRadius: 10,
-  background: '#E2E8F0',
-};
-
-const documentSize = {
-  fontSize: 11,
-  color: '#64748B',
-};
-
-const documentActions = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-};
-
-const viewDocBtn = {
-  padding: '4px 12px',
-  borderRadius: 6,
-  border: 'none',
-  fontSize: 11,
-  fontWeight: 600,
-  cursor: 'pointer',
-  background: '#3B82F6',
-  color: '#FFFFFF',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 4,
-  transition: 'all 0.2s',
-};
-
-const docStatusBadge = {
-  fontSize: 11,
-  padding: '2px 10px',
-  borderRadius: 10,
-  fontWeight: 600,
-};
-
-const actionContainer = {
-  display: 'flex',
-  gap: 12,
-  justifyContent: 'flex-end',
-  paddingTop: 16,
-  borderTop: '1px solid #E2E8F0',
-};
-
-const approveBtn = {
-  padding: '10px 28px',
-  borderRadius: 10,
-  background: '#10B981',
-  color: '#FFFFFF',
-  border: 'none',
-  fontWeight: 700,
-  fontSize: 13,
-  cursor: 'pointer',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  transition: 'all 0.2s',
-};
-
-const rejectBtn = {
-  padding: '10px 28px',
-  borderRadius: 10,
-  background: '#EF4444',
-  color: '#FFFFFF',
-  border: 'none',
-  fontWeight: 700,
-  fontSize: 13,
-  cursor: 'pointer',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  transition: 'all 0.2s',
-};
-
-const cancelBtn = {
-  padding: '10px 24px',
-  borderRadius: 10,
-  border: '1px solid #E2E8F0',
-  background: '#FFFFFF',
-  fontWeight: 600,
-  fontSize: 13,
-  cursor: 'pointer',
-  color: '#0F172A',
-  transition: 'all 0.2s',
-};
-
-const textArea = {
-  width: '100%',
-  padding: '12px 14px',
-  borderRadius: 8,
-  border: '1px solid #E2E8F0',
-  fontSize: 13,
-  color: '#0F172A',
-  background: '#FFFFFF',
-  outline: 'none',
-  resize: 'vertical',
-  minHeight: 100,
-  fontFamily: 'inherit',
-  transition: 'border-color 0.2s',
-};
-
-// Add keyframe animation for spinner
-if (typeof document !== 'undefined') {
-  const styleTag = document.createElement('style');
-  styleTag.textContent = `
-    @keyframes spin {
-      from { transform: rotate(0deg); }
-      to { transform: rotate(360deg); }
-    }
-  `;
-  document.head.appendChild(styleTag);
-}

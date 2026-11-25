@@ -290,10 +290,13 @@ export default function Businesses() {
       institutions: institutions.length,
       shops: shops.length,
       verified: all.filter((item) => item.is_verified).length,
-      active: all.filter((item) => isActive(item, tab)).length,
+      active:
+        providers.filter((item) => isActive(item, 'providers')).length +
+        institutions.filter((item) => isActive(item, 'institutions')).length +
+        shops.filter((item) => isActive(item, 'shops')).length,
       reviews: reviews.length,
     };
-  }, [providers, institutions, shops, reviews, tab]);
+  }, [providers, institutions, shops, reviews]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();

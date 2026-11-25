@@ -31,9 +31,6 @@ export default function Catalog() {
   const [imageInput, setImageInput] = useState('');
   const fileInputRef = useRef(null);
 
-  // Image error handling state
-  const [imageErrors, setImageErrors] = useState({});
-
   useEffect(() => { fetchData(); }, []);
 
   const fetchData = async () => {
@@ -113,7 +110,7 @@ export default function Catalog() {
       const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
       const filePath = `${fileName}`;
 
-      const { data, error } = await supabase.storage
+      const { error } = await supabase.storage
         .from('catalog-images')
         .upload(filePath, file, {
           cacheControl: '3600',
@@ -162,10 +159,6 @@ export default function Catalog() {
 
   const removeImage = (index) => {
     setFormData({ ...formData, images: formData.images.filter((_, i) => i !== index) });
-  };
-
-  const handleImageError = (index) => {
-    setImageErrors(prev => ({ ...prev, [index]: true }));
   };
 
   const addSpec = () => {
